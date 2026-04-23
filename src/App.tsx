@@ -1195,6 +1195,11 @@ function extractCompanyForTemplate(text: string): string {
 }
 
 function extractDepartment(text: string): string {
+  // Basement floors (지하1층, 지하 1층, B1층) take priority — must be checked
+  // before the general \d+층 pattern which would only grab the trailing digit
+  const basementMatch = text.match(/(지하\s*\d+층|B\s*\d+층)/i);
+  if (basementMatch) return basementMatch[1].replace(/\s+/g, "");
+
   // Prefer whitespace-anchored 1-2 digit floor: " 7층", " 11층"
   const spacedFloorMatch = text.match(/(?:^|\s)(\d{1,2})층/);
   if (spacedFloorMatch) return `${spacedFloorMatch[1]}층`;
@@ -1784,6 +1789,20 @@ const TEST_CASES: TestCase[] = [
     input:
       "31SS주식회사 에이피더핀매월마감ECOSYS-M5521CDN/VUY2Z03481서울 강남구 테헤란로 218에이피타워 11층 (AP Tower)010-6822-9591",
     expected: "부서명:11층",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 지하1층 주소 (지하1층으로 추출)",
+    input:
+      'A/S\tV\t모델\t"19V회사단순마감"\n기번\tX1\t자산번호\tA1\n접수자연락처\t010-1111-2222\n주소\t서울 성북구 종암로36길 52, 하월곡아남아파트 102동 9호10호 지하 1층 관리사무소',
+    expected: "부서명:지하1층",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - B1층 패턴도 지하층으로 인식",
+    input:
+      'A/S\tV\t모델\t"19V회사단순마감"\n기번\tX1\t자산번호\tA1\n접수자연락처\t010-1111-2222\n주소\t서울 강남구 테헤란로 123 B1층 기계실',
+    expected: "부서명:B1층",
     mode: "blank-report",
   },
   {
