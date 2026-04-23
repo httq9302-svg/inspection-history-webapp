@@ -573,11 +573,19 @@ function extractCompactCompany(line: string): string {
 
 // Table-format company — preserves newlines inside quoted "19V...매월마감" blocks
 function extractTableCompany(rawText: string): string {
+  const stripMarks = (s: string): string =>
+    s
+      .replace(/^㈜\s*/, "")
+      .replace(/\s*㈜\s*$/, "")
+      .replace(/^\(주\)\s*/, "")
+      .replace(/\s*\(주\)\s*$/, "")
+      .trim();
+
   const quotedGradeMatch = rawText.match(
     /"\s*\d+(?:NN|SS|S|N|V)?\s*([\s\S]*?)\s*(?:분기마감|매월마감|매년마감)\s*"/
   );
   if (quotedGradeMatch) {
-    return quotedGradeMatch[1].trim().replace(/^㈜\s*/, "");
+    return stripMarks(quotedGradeMatch[1].trim());
   }
 
   const lines = rawText.split(/\r?\n/);
@@ -586,11 +594,11 @@ function extractTableCompany(rawText: string): string {
       /^\s*\d+(?:NN|SS|S|N|V)([^\n]*?)(?:분기마감|매월마감|매년마감|오픈\s*\d*시?반?|단순마감마감|단순마감)/
     );
     if (gradeMatch) {
-      return gradeMatch[1].trim().replace(/^㈜\s*/, "").replace(/-\s*$/, "");
+      return stripMarks(gradeMatch[1].trim().replace(/-\s*$/, ""));
     }
   }
 
-  return extractCompanyForTemplate(rawText);
+  return stripMarks(extractCompanyForTemplate(rawText).replace(/-\s*$/, ""));
 }
 
 // Table-format model/serial — handles tab-separated "기종\tMODEL\t..." and "기번\t\"SERIAL\n..."
@@ -606,6 +614,41 @@ function extractTableModelSerial(rawText: string): ModelSerial {
     model: modelMatch ? modelMatch[1].trim() : "",
     serial: serialMatch ? serialMatch[1].trim() : "",
   };
+}
+
+// Table-format report type — reads 접수분야 field (handles 샘플전달, 점검, A/S, 여분요청, etc.)
+function extractTableReportType(rawText: string): string {
+  // Matches at line start OR after tab/space (since "접수유형 X 접수분야 Y" has both on same line)
+  const match = rawText.match(/(?:^|[\t ])접수분야[\t ]+([^\t\n]+?)(?=[\t\n]|$)/);
+  if (match) {
+    const t = match[1].trim();
+    if (t) return t;
+  }
+  return "";
+}
+
+// Table-format 상태 field — captures multi-line values, strips outer quotes,
+// stops at next known field label at line start
+function extractStatusTextFromRaw(rawText: string): string {
+  const startMatch = rawText.match(/^\s*상태\s+/m);
+  if (!startMatch) return "";
+
+  const startIdx = (startMatch.index ?? 0) + startMatch[0].length;
+  const remaining = rawText.slice(startIdx);
+
+  const boundaryMatch = remaining.match(
+    /^\s*(?:제목|참고사항|기종|기기상태|AS접수횟수|방문담당자|주소|미수개월|한조\/틴텍코드|★?키맨성함\/번호|접수자성함|접수자연락처|일반전화|설치업체|기본임대료|방문주기|납품\/교체일|종료일|계약일|임대리스트순번|접수유형|접수분야|기번|장비소유주|확장성|교체일로부터|교체이력|사용개월|남은개월|평균임대료|유지보수업체)/m
+  );
+
+  const endIdx = boundaryMatch ? (boundaryMatch.index ?? remaining.length) : remaining.length;
+  let value = remaining.slice(0, endIdx).trim();
+
+  // Strip outer matching quotes (e.g., `" MA2101...\n...함"`)
+  if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+    value = value.slice(1, -1).trim();
+  }
+
+  return value;
 }
 
 // Compact model/serial: "샤오미 MI-AIR/318115/00036240" → model + (rest as serial)
@@ -648,11 +691,10 @@ function splitPhoneLine(rawLine: string): string[] {
 function extractTableKeyman(rawText: string): string {
   const lines: string[] = [];
 
-  const nameMatch = rawText.match(
-    /접수자성함\s+([^\n\t]+?)(?=\s*(?:접수자연락처|\n|\t|$))/
-  );
+  // Use [\t ]+ instead of \s+ to stay within the same line (avoid swallowing newlines)
+  const nameMatch = rawText.match(/접수자성함[\t ]+([^\n\t]+?)(?=[\t\n])/);
   const contactPhoneMatch = rawText.match(
-    /접수자연락처\s+(01\d[- ]?\d{3,4}[- ]?\d{4}|0\d{1,2}[- ]?\d{3,4}[- ]?\d{4})/
+    /접수자연락처[\t ]+(01\d[- ]?\d{3,4}[- ]?\d{4}|0\d{1,2}[- ]?\d{3,4}[- ]?\d{4})/
   );
 
   const name = nameMatch ? nameMatch[1].trim() : "";
@@ -671,11 +713,21 @@ function extractTableKeyman(rawText: string): string {
     lines.push(landlineMatch[1].trim());
   }
 
-  const keymanMatch = rawText.match(
-    /★?키맨성함\/번호\s+([^\n\t]+?)(?=\s*(?:\n|\t|방문담당자|한조\/틴텍코드|주소|확장성|$))/
-  );
-  if (keymanMatch) {
-    lines.push(keymanMatch[1].trim());
+  // Quoted multi-line form: "010-... 이름\n010-..."
+  const quotedKeymanMatch = rawText.match(/★?키맨성함\/번호\s*[\t ]+\s*"([\s\S]*?)"/);
+  if (quotedKeymanMatch) {
+    const inner = quotedKeymanMatch[1]
+      .split(/\r?\n/)
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+    lines.push(...inner);
+  } else {
+    const keymanMatch = rawText.match(
+      /★?키맨성함\/번호\s+([^\n\t]+?)(?=\s*(?:\n|\t|방문담당자|한조\/틴텍코드|주소|확장성|$))/
+    );
+    if (keymanMatch) {
+      lines.push(keymanMatch[1].trim());
+    }
   }
 
   if (lines.length === 0) {
@@ -1260,7 +1312,10 @@ function buildBlankReport(blockLines: string[]): ResultItem {
   const flatText = blockLines.join(" ");
   const format = detectInputFormat(rawText);
 
-  const type = extractReportType(flatText);
+  // Type: table format prefers 접수분야 field (handles 샘플전달, 점검, A/S, 여분요청...)
+  const tableType = format === "table" ? extractTableReportType(rawText) : "";
+  const type = tableType || extractReportType(flatText);
+
   const level = extractReportLevel(flatText, type);
   const grade = extractGrade(flatText);
   const company =
@@ -1280,8 +1335,24 @@ function buildBlankReport(blockLines: string[]): ResultItem {
     return extractModelAndSerial(flatText);
   })();
   const assetNumber = extractAssetNumber(flatText);
-  const content = extractTemplateContent(flatText, type);
-  const processContent = extractTemplateProcessContent(flatText, type);
+
+  // Content: table format prefers 상태 field (multi-line, quote-stripped).
+  // If 상태 has a value, use it and leave 처리내용 blank; otherwise fall back to defaults.
+  let content: string;
+  let processContent: string;
+  if (format === "table") {
+    const status = extractStatusTextFromRaw(rawText);
+    if (status) {
+      content = status;
+      processContent = "";
+    } else {
+      content = extractTemplateContent(flatText, type);
+      processContent = extractTemplateProcessContent(flatText, type);
+    }
+  } else {
+    content = extractTemplateContent(flatText, type);
+    processContent = extractTemplateProcessContent(flatText, type);
+  }
 
   const body = formatPrinterReport({
     type,
@@ -1543,6 +1614,34 @@ const TEST_CASES: TestCase[] = [
     input:
       'A/S\tV\t모델\t"19V회사매월마감"\n접수자성함\t양명호\n접수자연락처\t010-6314-7409\n제목\t출력시 묻어나옴\n상태\t출력시 묻어나옴\n참고사항\t" [AS 히스토리 요약]\n📊 총 접수 건수: 3건\n✅ 특이사항 없음"',
     expected: "내용: 출력시 묻어나옴\n처리내용:",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 접수분야가 샘플전달이면 구분도 샘플전달",
+    input:
+      '샘플전달\tN\tES5473\t"15N브루니아단순마감"\n접수유형\t전화\t접수분야\t샘플전달\n기번\tAK96006517',
+    expected: "구분:샘플전달",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 점검 타입이어도 상태값 있으면 내용에 사용",
+    input:
+      '점검\tN\t모델\t"19N회사단순마감"\n기번\tXYZ123\t자산번호\tA1\n접수유형\t카카오\t접수분야\t점검\n상태\t실제 문제 증상\n참고사항\t" 뭐라뭐라 "',
+    expected: "내용: 실제 문제 증상\n처리내용:",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 키맨 따옴표 다중라인 (분리)",
+    input:
+      'A/S\tV\t모델\t"19V회사매월마감"\n접수자성함\t\n접수자연락처\t010-1111-2222\n★키맨성함/번호\t"010-3333-4444 대표님\n010-5555-6666"\n방문담당자\t수도권C',
+    expected: "010-5555-6666",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 업체명 끝 ㈜ 제거",
+    input:
+      "점검    N   MFC-L5700DN   19N동영공예품㈜-단순마감마감\n접수분야   점검\n기번   E7671",
+    expected: "업체명:동영공예품",
     mode: "blank-report",
   },
   {
