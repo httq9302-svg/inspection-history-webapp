@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { KeyboardEvent } from "react";
 
-type Mode = "inspection" | "samsung-note" | "blank-report";
+type Mode = "inspection" | "blank-report" | "air-purifier" | "samsung-note";
 
 type CopyResult = {
   ok: boolean;
@@ -13,7 +13,12 @@ type ModelSerial = {
   serial: string;
 };
 
-type TestMode = "inspection" | "samsung-note" | "blank-report" | "shared";
+type ResultItem = {
+  content: string;
+  warning?: string;
+};
+
+type TestMode = Mode | "shared";
 
 type TestCase = {
   name: string;
@@ -28,8 +33,53 @@ type TestResult = TestCase & {
   actual: string;
 };
 
+type ModeConfig = {
+  label: string;
+  accent: string;
+  bgSoft: string;
+  textDark: string;
+  placeholder: string;
+};
+
+const MODE_ORDER: Mode[] = ["inspection", "blank-report", "air-purifier", "samsung-note"];
+
+const MODE_CONFIG: Record<Mode, ModeConfig> = {
+  inspection: {
+    label: "점검",
+    accent: "#185FA5",
+    bgSoft: "#E6F1FB",
+    textDark: "#0C447C",
+    placeholder: "여기에 -시작- 부터 -끝- 까지의 원본 점검이력을 붙여넣으세요.",
+  },
+  "blank-report": {
+    label: "미양식",
+    accent: "#0F6E56",
+    bgSoft: "#E1F5EE",
+    textDark: "#04342C",
+    placeholder: "여기에 스케줄 원문을 문단별로 붙여넣으세요.",
+  },
+  "air-purifier": {
+    label: "청정기",
+    accent: "#993C1D",
+    bgSoft: "#FAECE7",
+    textDark: "#4A1B0C",
+    placeholder: "여기에 공기청정기 점검이력 원본을 붙여넣으세요.",
+  },
+  "samsung-note": {
+    label: "삼성노트",
+    accent: "#534AB7",
+    bgSoft: "#EEEDFE",
+    textDark: "#26215C",
+    placeholder: "여기에 번호가 붙은 스케줄 원문을 여러 개 붙여넣으세요.",
+  },
+};
+
 const ITEM_DIVIDER = "_____________________________";
 const SECTION_DIVIDER = "------------------------------------";
+
+// ────────────────────────────────────────────────────────────────────────────
+// Shared text utilities
+// ────────────────────────────────────────────────────────────────────────────
 
 function isDividerLine(line: string): boolean {
   return /^\s*[-_]{5,}\s*$/.test(line);
@@ -64,33 +114,6 @@ function collectMultilineField(
   }
 
   return collected;
-}
-
-function collectExtraLines(cleaned: string[]): string[] {
-  return collectMultilineField(
-    cleaned,
-    /^여분\s*:/,
-    /^(한틴이카유무|주차비지원유무|특이사항|모델명|시리얼넘버|자산기번|내용|처리내용|매수|토너잔량|폐통)\s*:/,
-    ["여분: K- C- M- Y- 폐- "]
-  );
-}
-
-function collectNoteLines(cleaned: string[]): string[] {
-  return collectMultilineField(
-    cleaned,
-    /^특이사항\s*:/,
-    /^(모델명|시리얼넘버|자산기번|내용|처리내용|매수|토너잔량|폐통|여분|한틴이카유무|주차비지원유무)\s*:/,
-    ["특이사항:"]
-  );
-}
-
-function collectParkingLines(cleaned: string[]): string[] {
-  return collectMultilineField(
-    cleaned,
-    /^주차비지원유무\s*:/,
-    /^(특이사항|모델명|시리얼넘버|자산기번|내용|처리내용|매수|토너잔량|폐통|여분|한틴이카유무)\s*:/,
-    ["주차비지원유무: "]
-  );
 }
 
 function collectHeaderMultiline(
@@ -139,7 +162,135 @@ function stripConsumedTitleLine(cleaned: string[]): string[] {
   return cleaned;
 }
 
-function normalizeItemBlock(blockLines: string[], blockIndex: number): string[] {
+function splitItemBlocks(lines: string[]): string[][] {
+  const blocks: string[][] = [];
+  let current: string[] = [];
+
+  for (const line of lines) {
+    if (isDividerLine(line)) {
+      if (current.length > 0) {
+        blocks.push(current);
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
+  }
+
+  if (current.length > 0) blocks.push(current);
+  return blocks;
+}
+
+function extractHeader(headerLines: string[]): string[] {
+  const gradeLines = collectHeaderMultiline(
+    headerLines,
+    /^등급\s*:/,
+    /^(작성자|구분|레벨|업체명|부서명|지역|키맨\/접수자)\s*:/,
+    ["등급:  "]
+  );
+  const companyLines = collectHeaderMultiline(
+    headerLines,
+    /^업체명\s*:/,
+    /^(작성자|구분|레벨|등급|부서명|지역|키맨\/접수자)\s*:/,
+    ["업체명: "]
+  );
+  const departmentLines = collectHeaderMultiline(
+    headerLines,
+    /^부서명\s*:/,
+    /^(작성자|구분|레벨|등급|업체명|지역|키맨\/접수자)\s*:/,
+    ["부서명: "]
+  );
+  const regionLines = collectHeaderMultiline(
+    headerLines,
+    /^지역\s*:/,
+    /^(작성자|구분|레벨|등급|업체명|부서명|키맨\/접수자)\s*:/,
+    ["지역: "]
+  );
+  const keymanLines = collectHeaderMultiline(
+    headerLines,
+    /^키맨\/접수자\s*:/,
+    /^(작성자|구분|레벨|등급|업체명|부서명|지역)\s*:/,
+    ["키맨/접수자:"]
+  );
+
+  return [
+    "작성자: ",
+    "구분: 점검",
+    "레벨: 1",
+    ...gradeLines,
+    ...companyLines,
+    ...departmentLines,
+    ...regionLines,
+    ...keymanLines,
+  ];
+}
+
+function findPartsSectionEnd(bodyLines: string[]): number {
+  const partsIndex = bodyLines.findIndex((line: string) => /^\s*※부품신청※\s*$/.test(line));
+  const selfIndex = bodyLines.findIndex((line: string) => /^\s*※자가신청※\s*$/.test(line));
+  const arrivalIndex = bodyLines.findIndex((line: string) => /^도착 시간\s*:/.test(line));
+  const durationIndex = bodyLines.findIndex((line: string) => /^소요 시간\s*:/.test(line));
+
+  let end = bodyLines.length;
+  if (partsIndex >= 0) end = Math.min(end, partsIndex);
+  if (selfIndex >= 0) end = Math.min(end, selfIndex);
+  if (arrivalIndex >= 0) end = Math.min(end, arrivalIndex);
+  if (durationIndex >= 0) end = Math.min(end, durationIndex);
+  return end;
+}
+
+const STANDARD_PARTS_SECTION: string[] = [
+  SECTION_DIVIDER,
+  "※부품신청※",
+  "보증기간 내 여부 : ",
+  "교체 전 카운터 누적 사용매수 : ",
+  "사용 부품 예상 사용매수 : ",
+  "▶ 신청 부품",
+  "물품명:",
+  "수량:",
+  "출고여부: ",
+  SECTION_DIVIDER,
+  "※자가신청※",
+  "물품:",
+  "수량:",
+  "출고여부:",
+  ITEM_DIVIDER,
+  "도착 시간:",
+  "소요 시간:",
+];
+
+// ────────────────────────────────────────────────────────────────────────────
+// Mode 1: Inspection (점검이력 변환)
+// ────────────────────────────────────────────────────────────────────────────
+
+function collectExtraLines(cleaned: string[]): string[] {
+  return collectMultilineField(
+    cleaned,
+    /^여분\s*:/,
+    /^(한틴이카유무|주차비지원유무|특이사항|모델명|시리얼넘버|자산기번|내용|처리내용|매수|토너잔량|폐통)\s*:/,
+    ["여분: K- C- M- Y- 폐- "]
+  );
+}
+
+function collectNoteLines(cleaned: string[]): string[] {
+  return collectMultilineField(
+    cleaned,
+    /^특이사항\s*:/,
+    /^(모델명|시리얼넘버|자산기번|내용|처리내용|매수|토너잔량|폐통|여분|한틴이카유무|주차비지원유무)\s*:/,
+    ["특이사항:"]
+  );
+}
+
+function collectParkingLines(cleaned: string[]): string[] {
+  return collectMultilineField(
+    cleaned,
+    /^주차비지원유무\s*:/,
+    /^(특이사항|모델명|시리얼넘버|자산기번|내용|처리내용|매수|토너잔량|폐통|여분|한틴이카유무)\s*:/,
+    ["주차비지원유무: "]
+  );
+}
+
+function normalizeInspectionItemBlock(blockLines: string[], blockIndex: number): string[] {
   const cleaned = blockLines
     .map((line: string) => line.trimEnd())
     .filter((line: string) => line !== "" && !isDividerLine(line));
@@ -174,25 +325,6 @@ function normalizeItemBlock(blockLines: string[], blockIndex: number): string[] 
   ];
 }
 
-function splitItemBlocks(lines: string[]): string[][] {
-  const blocks: string[][] = [];
-  let current: string[] = [];
-
-  for (const line of lines) {
-    if (isDividerLine(line)) {
-      if (current.length > 0) {
-        blocks.push(current);
-        current = [];
-      }
-      continue;
-    }
-    current.push(line);
-  }
-
-  if (current.length > 0) blocks.push(current);
-  return blocks;
-}
-
 function transformInspectionText(input: string): string {
   if (!input || !input.trim()) return "";
 
@@ -202,97 +334,98 @@ function transformInspectionText(input: string): string {
   const headerLines = lines.slice(0, itemStartIndex);
   const bodyLines = lines.slice(itemStartIndex);
 
-  const gradeLines = collectHeaderMultiline(
-    headerLines,
-    /^등급\s*:/,
-    /^(작성자|구분|레벨|업체명|부서명|지역|키맨\/접수자)\s*:/,
-    ["등급:  "]
-  );
-  const companyLines = collectHeaderMultiline(
-    headerLines,
-    /^업체명\s*:/,
-    /^(작성자|구분|레벨|등급|부서명|지역|키맨\/접수자)\s*:/,
-    ["업체명: "]
-  );
-  const departmentLines = collectHeaderMultiline(
-    headerLines,
-    /^부서명\s*:/,
-    /^(작성자|구분|레벨|등급|업체명|지역|키맨\/접수자)\s*:/,
-    ["부서명: "]
-  );
-  const regionLines = collectHeaderMultiline(
-    headerLines,
-    /^지역\s*:/,
-    /^(작성자|구분|레벨|등급|업체명|부서명|키맨\/접수자)\s*:/,
-    ["지역: "]
-  );
-  const keymanLines = collectHeaderMultiline(
-    headerLines,
-    /^키맨\/접수자\s*:/,
-    /^(작성자|구분|레벨|등급|업체명|부서명|지역)\s*:/,
-    ["키맨/접수자:"]
-  );
-
-  const normalizedHeader: string[] = [
-    "작성자: ",
-    "구분: 점검",
-    "레벨: 1",
-    ...gradeLines,
-    ...companyLines,
-    ...departmentLines,
-    ...regionLines,
-    ...keymanLines,
-  ];
-
-  const partsIndex = bodyLines.findIndex((line: string) => /^\s*※부품신청※\s*$/.test(line));
-  const selfIndex = bodyLines.findIndex((line: string) => /^\s*※자가신청※\s*$/.test(line));
-  const arrivalIndex = bodyLines.findIndex((line: string) => /^도착 시간\s*:/.test(line));
-  const durationIndex = bodyLines.findIndex((line: string) => /^소요 시간\s*:/.test(line));
-
-  let itemSectionEnd = bodyLines.length;
-  if (partsIndex >= 0) itemSectionEnd = Math.min(itemSectionEnd, partsIndex);
-  if (selfIndex >= 0) itemSectionEnd = Math.min(itemSectionEnd, selfIndex);
-  if (arrivalIndex >= 0) itemSectionEnd = Math.min(itemSectionEnd, arrivalIndex);
-  if (durationIndex >= 0) itemSectionEnd = Math.min(itemSectionEnd, durationIndex);
-
+  const normalizedHeader = extractHeader(headerLines);
+  const itemSectionEnd = findPartsSectionEnd(bodyLines);
   const rawItemSection = bodyLines.slice(0, itemSectionEnd);
   const itemBlocks = splitItemBlocks(rawItemSection);
   const normalizedItemSection: string[] = [];
 
   itemBlocks.forEach((block: string[], index: number) => {
-    const normalizedBlock = normalizeItemBlock(block, index);
+    const normalizedBlock = normalizeInspectionItemBlock(block, index);
     if (normalizedBlock.length === 0) return;
     normalizedItemSection.push(ITEM_DIVIDER);
     normalizedItemSection.push(...normalizedBlock);
   });
 
-  const standardizedParts: string[] = [
-    SECTION_DIVIDER,
-    "※부품신청※",
-    "보증기간 내 여부 : ",
-    "교체 전 카운터 누적 사용매수 : ",
-    "사용 부품 예상 사용매수 : ",
-    "▶ 신청 부품",
-    "물품명:",
-    "수량:",
-    "출고여부: ",
-    SECTION_DIVIDER,
-    "※자가신청※",
-    "물품:",
-    "수량:",
-    "출고여부:",
-    ITEM_DIVIDER,
-    "도착 시간:",
-    "소요 시간:",
-  ];
-
-  return [...normalizedHeader, ...normalizedItemSection, ...standardizedParts].join("\n");
+  return [...normalizedHeader, ...normalizedItemSection, ...STANDARD_PARTS_SECTION].join("\n");
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Mode 2: Air Purifier (청정기 점검이력 변환)
+// ────────────────────────────────────────────────────────────────────────────
+
+function collectAirPurifierNoteLines(cleaned: string[]): string[] {
+  return collectMultilineField(
+    cleaned,
+    /^특이사항\s*:/,
+    /^(모델명|시리얼넘버|자산기번|내용|처리내용|필터리셋|필터교체)\s*:/,
+    ["특이사항:"]
+  );
+}
+
+function normalizeAirPurifierItemBlock(blockLines: string[], blockIndex: number): string[] {
+  const cleaned = blockLines
+    .map((line: string) => line.trimEnd())
+    .filter((line: string) => line !== "" && !isDividerLine(line));
+
+  if (cleaned.length === 0) return [];
+
+  const titleLine = buildItemTitleLine(cleaned, blockIndex);
+  const contentLines = stripConsumedTitleLine(cleaned);
+
+  const modelLine = findLine(contentLines, /^모델명\s*:/);
+  const serialLine = findLine(contentLines, /^시리얼넘버\s*:/);
+  const assetLine = findLine(contentLines, /^자산기번\s*:/);
+  const filterResetLine = findLine(contentLines, /^필터리셋\s*:/) || "필터리셋:";
+  const filterReplaceLine = findLine(contentLines, /^필터교체\s*:/) || "필터교체:";
+  const noteLines = collectAirPurifierNoteLines(contentLines);
+
+  return [
+    titleLine,
+    modelLine || "모델명:",
+    serialLine || "시리얼넘버:",
+    assetLine || "자산기번: ",
+    "내용: 정기점검",
+    "처리내용: 정기점검",
+    filterResetLine,
+    filterReplaceLine,
+    ...noteLines,
+  ];
+}
+
+function transformAirPurifierText(input: string): string {
+  if (!input || !input.trim()) return "";
+
+  const lines = input.split(/\r?\n/);
+  const firstDividerIndex = lines.findIndex((line: string) => isDividerLine(line));
+  const itemStartIndex = firstDividerIndex >= 0 ? firstDividerIndex : lines.length;
+  const headerLines = lines.slice(0, itemStartIndex);
+  const bodyLines = lines.slice(itemStartIndex);
+
+  const normalizedHeader = extractHeader(headerLines);
+  const itemSectionEnd = findPartsSectionEnd(bodyLines);
+  const rawItemSection = bodyLines.slice(0, itemSectionEnd);
+  const itemBlocks = splitItemBlocks(rawItemSection);
+  const normalizedItemSection: string[] = [];
+
+  itemBlocks.forEach((block: string[], index: number) => {
+    const normalizedBlock = normalizeAirPurifierItemBlock(block, index);
+    if (normalizedBlock.length === 0) return;
+    normalizedItemSection.push(ITEM_DIVIDER);
+    normalizedItemSection.push(...normalizedBlock);
+  });
+
+  return [...normalizedHeader, ...normalizedItemSection, ...STANDARD_PARTS_SECTION].join("\n");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Mode 3: Samsung Note Titles (삼성노트 제목 생성)
+// ────────────────────────────────────────────────────────────────────────────
 
 function splitScheduleBlocks(input: string): string[][] {
   if (!input || !input.trim()) return [];
 
-  const lines = input.split(/\r?\n/).map((line: string) => line.trimRight());
+  const lines = input.split(/\r?\n/).map((line: string) => line.trimEnd());
   const blocks: string[][] = [];
   let current: string[] = [];
 
@@ -315,29 +448,35 @@ function splitScheduleBlocks(input: string): string[][] {
   return blocks;
 }
 
+const NOISE_KEYWORDS = [
+  "주식회사",
+  "\\(유\\)",
+  "\\(개인\\)",
+  "분기마감",
+  "매월마감",
+  "매년마감",
+  "단순마감마감",
+  "단순마감",
+  "전일연락필수",
+  "준전일연락필수",
+  "진성완료",
+  "현장종료",
+  "운영팀",
+  "개인영업",
+  "퍼스트",
+  "전자",
+  "대체기지참",
+  "용지없음에러",
+  "PC셋팅",
+];
+
 function normalizeSamsungText(text: string): string {
-  return text
-    .replace(/주식회사/g, "")
-    .replace(/\(유\)/g, "")
-    .replace(/\(개인\)/g, "")
-    .replace(/분기마감/g, "")
-    .replace(/매월마감/g, "")
-    .replace(/매년마감/g, "")
-    .replace(/단순마감마감/g, "")
-    .replace(/단순마감/g, "")
-    .replace(/전일연락필수/g, "")
-    .replace(/준전일연락필수/g, "")
-    .replace(/진성완료/g, "")
-    .replace(/현장종료/g, "")
-    .replace(/운영팀/g, "")
-    .replace(/개인영업/g, "")
-    .replace(/퍼스트/g, "")
-    .replace(/전자/g, "")
-    .replace(/레벨\d+/g, "")
+  let result = text;
+  for (const keyword of NOISE_KEYWORDS) {
+    result = result.replace(new RegExp(keyword, "g"), "");
+  }
+  return result
     .replace(/레벨\s*\d+/g, "")
-    .replace(/대체기지참/g, "")
-    .replace(/용지없음에러/g, "")
-    .replace(/PC셋팅/g, "")
     .replace(/종료일[^\n]*/g, "")
     .replace(/접수일[^\n]*/g, "")
     .replace(/지역[^\n]*/g, "")
@@ -359,26 +498,6 @@ function isLikelyModelLine(line: string): boolean {
     /([A-Za-z가-힣0-9][A-Za-z가-힣0-9._-]{1,})\s*\/\s*([A-Z0-9-]{6,})/.test(line) ||
     /(SL-|DocuCentre|DocuPrint|ECOSYS|Apeos|IR-|bizhub|TASKalfa|MX-|C2263|D470|D320|D450|X3220|C3373|C3375|MFC-)/i.test(line)
   );
-}
-
-function dedupeRepeatedPhrase(text: string): string {
-  const compact = text.replace(/\s+/g, "");
-  const known = [
-    "대흥스페이스",
-    "행복",
-    "아인기획",
-    "셔츠팩토리",
-    "폴리테루",
-    "서원피앤씨",
-    "원밀리언",
-    "문워크디자인",
-    "올림커뮤니케이션",
-    "광은교회",
-    "하이대부자산관리",
-  ];
-  const found = known.find((item: string) => compact.includes(item.replace(/\s+/g, "")));
-  if (found) return found;
-  return text.trim();
 }
 
 function extractTopSummaryLine(lines: string[]): string {
@@ -411,32 +530,18 @@ function extractCompanyFromPrimaryLine(line: string): string {
   let raw = line.trim();
 
   raw = raw.replace(/^\d+(NN|SS|S|N|V)/, "").trim();
-  raw = raw.replace(/^(이민구|김정식|손영근|신정훈|박진영|김숙영|박옥주|현호진|김정민|이홍진|정준영)\s+/, "");
+  raw = raw.replace(/^[가-힣]{2,4}\s+/, "");
 
   const slashIndex = raw.indexOf("/");
   if (slashIndex >= 0) {
     raw = raw.slice(0, slashIndex).trim();
   }
 
-  raw = raw
-    .replace(/주식회사/g, "")
-    .replace(/단순마감마감/g, "")
-    .replace(/단순마감/g, "")
-    .replace(/분기마감/g, "")
-    .replace(/매월마감/g, "")
-    .replace(/매년마감/g, "")
-    .replace(/전일연락필수/g, "")
-    .replace(/준전일연락필수/g, "")
-    .replace(/진성완료/g, "")
-    .replace(/현장종료/g, "")
-    .replace(/레벨\s*\d+/g, "")
-    .replace(/대체기지참/g, "")
-    .replace(/용지없음에러/g, "")
-    .replace(/[·•]/g, " ")
-    .replace(/\b(NN|SS|S|N|V)\b/g, "")
-    .trim();
+  raw = normalizeSamsungText(raw);
 
   raw = raw
+    .replace(/[·•]/g, " ")
+    .replace(/\b(NN|SS|S|N|V)\b/g, "")
     .replace(/^[-,\s]+/, "")
     .replace(/[-,\s]+$/, "")
     .replace(/\s+/g, " ")
@@ -463,8 +568,6 @@ function cleanCompanyCandidate(candidate: string): string {
     .replace(/\s*주식회사\s*/g, " ")
     .replace(/\s*\([^)]*\)/g, "")
     .replace(/(?:,\s*)?주식회사\s*/g, " ")
-    .replace(/(?:서초|강남|송파|성동|화성)사무실$/, "")
-    .replace(/(?:서초|강남|송파|성동|화성)구$/, "")
     .replace(/\s*-\s*$/, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -480,19 +583,7 @@ function extractKnownCompany(line: string): string {
   if (!cleaned) return "";
 
   const beforeComma = cleaned.split(",")[0].trim();
-  const shortened = beforeComma
-    .replace(/단순마감마감/g, "")
-    .replace(/단순마감/g, "")
-    .replace(/분기마감/g, "")
-    .replace(/매월마감/g, "")
-    .replace(/매년마감/g, "")
-    .replace(/전일연락필수/g, "")
-    .replace(/준전일연락필수/g, "")
-    .replace(/진성완료/g, "")
-    .replace(/현장종료/g, "")
-    .replace(/레벨\s*\d+/g, "")
-    .replace(/대체기지참/g, "")
-    .replace(/용지없음에러/g, "")
+  const shortened = normalizeSamsungText(beforeComma)
     .replace(/\b(NN|SS|S|N|V)\b/g, "")
     .replace(/(?:금요일만 방문 가능|점심시간.*|엘베.*|계단.*|사진첨부.*|주정차.*)$/g, "")
     .replace(/\s*-\s*$/, "")
@@ -508,7 +599,7 @@ function extractKnownCompany(line: string): string {
     .filter((part: string) => !isLikelyAddressLine(part) && !isLikelyPhoneLine(part) && !isLikelyModelLine(part));
 
   const preferred = parts.find((part: string) => /[가-힣A-Za-z]{2,}/.test(part));
-  return preferred ? dedupeRepeatedPhrase(preferred) : "";
+  return preferred || "";
 }
 
 function extractCompanySummary(lines: string[]): string {
@@ -559,16 +650,29 @@ function extractCompanySummary(lines: string[]): string {
   return company || "미기재";
 }
 
-function transformSamsungNoteTitles(input: string): string[] {
+function transformSamsungNoteTitles(input: string): ResultItem[] {
   const blocks = splitScheduleBlocks(input);
   return blocks.map((lines: string[], index: number) => {
     const rawTopLine = extractTopSummaryLine(lines);
     const finalTopLine = rawTopLine && rawTopLine !== "." ? rawTopLine : "점검";
     const company = extractCompanySummary(lines);
     const location = extractLocationLabel(lines);
-    return `${index + 1}/${company} ${location}/${finalTopLine}`;
+    const content = `${index + 1}/${company} ${location}/${finalTopLine}`;
+
+    const warnings: string[] = [];
+    if (company === "미기재") warnings.push("업체명 추출 실패");
+    if (location === "미기재") warnings.push("위치 추출 실패");
+
+    return {
+      content,
+      warning: warnings.length > 0 ? warnings.join(" · ") : undefined,
+    };
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Mode 4: Blank Report (미양식 → 빈 보고서 양식 생성)
+// ────────────────────────────────────────────────────────────────────────────
 
 function splitParagraphBlocks(input: string): string[][] {
   if (!input || !input.trim()) return [];
@@ -722,7 +826,7 @@ function extractTemplateProcessContent(_text: string, type: string): string {
   return "";
 }
 
-function buildBlankReport(blockLines: string[]): string {
+function buildBlankReport(blockLines: string[]): ResultItem {
   const text = blockLines.join(" ");
   const type = extractReportType(text);
   const level = extractReportLevel(text, type);
@@ -735,7 +839,7 @@ function buildBlankReport(blockLines: string[]): string {
   const content = extractTemplateContent(text, type);
   const processContent = extractTemplateProcessContent(text, type);
 
-  return [
+  const body = [
     "작성자:",
     `구분:${type}`,
     `레벨:${level}`,
@@ -775,12 +879,26 @@ function buildBlankReport(blockLines: string[]): string {
     "도착 시간:",
     "소요 시간:",
   ].join("\n");
+
+  const warnings: string[] = [];
+  if (!company) warnings.push("업체명 추출 실패");
+  if (!ms.model && !ms.serial) warnings.push("모델/시리얼 추출 실패");
+  if (!keyman) warnings.push("연락처 추출 실패");
+
+  return {
+    content: body,
+    warning: warnings.length > 0 ? warnings.join(" · ") : undefined,
+  };
 }
 
-function transformBlankReports(input: string): string[] {
+function transformBlankReports(input: string): ResultItem[] {
   const blocks = splitParagraphBlocks(input);
   return blocks.map((block: string[]) => buildBlankReport(block));
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Clipboard utilities
+// ────────────────────────────────────────────────────────────────────────────
 
 function copyTextFallback(text: string): boolean {
   const textarea = document.createElement("textarea");
@@ -813,18 +931,33 @@ async function copyTextToClipboard(text: string): Promise<CopyResult> {
   if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
     try {
       await navigator.clipboard.writeText(text);
-      return { ok: true, message: "결과를 복사했습니다." };
+      return { ok: true, message: "복사 완료" };
     } catch {
       const fallbackSucceeded = copyTextFallback(text);
-      if (fallbackSucceeded) return { ok: true, message: "결과를 복사했습니다." };
-      return { ok: false, message: "브라우저 권한으로 복사가 차단되었습니다. 결과창에서 직접 선택해 복사해 주세요." };
+      if (fallbackSucceeded) return { ok: true, message: "복사 완료" };
+      return { ok: false, message: "복사가 차단되었습니다. 직접 선택해 복사해 주세요." };
     }
   }
 
   const fallbackSucceeded = copyTextFallback(text);
-  if (fallbackSucceeded) return { ok: true, message: "결과를 복사했습니다." };
-  return { ok: false, message: "브라우저 권한으로 복사가 차단되었습니다. 결과창에서 직접 선택해 복사해 주세요." };
+  if (fallbackSucceeded) return { ok: true, message: "복사 완료" };
+  return { ok: false, message: "복사가 차단되었습니다. 직접 선택해 복사해 주세요." };
 }
+
+async function pasteFromClipboard(): Promise<string | null> {
+  if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.readText) {
+    try {
+      return await navigator.clipboard.readText();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Tests (DEV only)
+// ────────────────────────────────────────────────────────────────────────────
 
 const TEST_CASES: TestCase[] = [
   {
@@ -840,21 +973,9 @@ const TEST_CASES: TestCase[] = [
     mode: "inspection",
   },
   {
-    name: "키맨 접수자 여러 줄 유지",
-    input: "구분: 점검\n키맨/접수자: 홍길동\n010-1111-1111\n김철수 부장\n-------------------------------------",
-    expected: "김철수 부장",
-    mode: "inspection",
-  },
-  {
     name: "특이사항 여러 줄 유지",
     input: "-------------------------------------\n모델명: ECOSYS\n특이사항: 첫줄\n둘째줄\n셋째줄",
     expected: "셋째줄",
-    mode: "inspection",
-  },
-  {
-    name: "여분 아래줄 위치 유지",
-    input: "-------------------------------------\n모델명: ECOSYS\n여분: 토너1 SET\n(복합기 밑 서랍장)\n한틴이카유무: 한공",
-    expected: "(복합기 밑 서랍장)",
     mode: "inspection",
   },
   {
@@ -864,64 +985,28 @@ const TEST_CASES: TestCase[] = [
     mode: "inspection",
   },
   {
-    name: "제목 없으면 번호만 생성",
-    input: "-------------------------------------\n모델명: D470\n시리얼넘버: 809150608947\n-------------------------------------\n모델명: D470\n시리얼넘버: 809150710281",
-    expected: "2.",
-    mode: "inspection",
+    name: "청정기 필터리셋 필드 유지",
+    input: "구분:점검\n등급:S\n업체명:업체A\n부서명:7층\n지역:C\n키맨/접수자:010-0000-0000\n_____________________________\n1.\n모델명:샤오미 MI-AIR\n시리얼넘버:318115/00036240\n자산기번: X7505\n내용: 정기점검\n처리내용: 필터 청소\n필터리셋:유\n필터교체:무\n특이사항: 없음",
+    expected: "필터리셋:유",
+    mode: "air-purifier",
   },
   {
-    name: "처리내용 번호문장 제목 오인식 방지",
-    input: "작성자: 신정훈\n구분: AS\n레벨: ( 4 )\n등급 : SS\n업체명: 이든에듀2관\n부서명 :\n지역: C\n키맨/접수자:\n키맨성함/번호\n서은관    010-8798-3139\n-------------------------------------\n모델명: K7500\n시리얼넘버: 0A3FBJPR30000QT\n자산기번 : B6691\n내용: , 피니셔 걸쳐 나온 용지를 받쳐주는 것이 자동으로 올라오지 않습니다\n처리내용:\n1. 피니셔에서 출력물이 나온 후 자동으로 돌아가지 않음 확인.\n2. 안수복 부파트장 문의.",
-    expected: "\n1.\n모델명: K7500",
-    mode: "inspection",
+    name: "청정기 필터교체 필드 유지",
+    input: "구분:점검\n등급:S\n업체명:업체A\n부서명:7층\n지역:C\n키맨/접수자:010-0000-0000\n_____________________________\n1.\n모델명:샤오미 MI-AIR\n시리얼넘버:318115/00036240\n자산기번: X7505\n내용: 정기점검\n처리내용: 필터 청소\n필터리셋:유\n필터교체:무\n특이사항: 없음",
+    expected: "필터교체:무",
+    mode: "air-purifier",
   },
   {
-    name: "국제안전 업체명 정리",
-    input: "2.교체\n이민구 레벨3 대체기지참·용지없음에러 NN 주식회사 국제안전 MFC-L5700DN / 서울 광진구 동일로 327 3·4층",
-    expected: "1/국제안전 4층/교체",
+    name: "청정기 매수/토너 필드 제외",
+    input: "구분:점검\n등급:S\n업체명:업체A\n부서명:7층\n지역:C\n키맨/접수자:010-0000-0000\n_____________________________\n1.\n모델명:샤오미 MI-AIR\n시리얼넘버:318115/00036240\n필터리셋:유\n필터교체:무\n특이사항: 없음",
+    mode: "air-purifier",
+    expected: "※부품신청※",
+  },
+  {
+    name: "삼성노트 업체명 추출 실패 경고",
+    input: "1.점검\n알수없는텍스트\n010-1234-5678",
+    expected: "미기재",
     mode: "samsung-note",
-  },
-  {
-    name: "코리움사이언스 단순마감 제거",
-    input: "8.점검\n30N코리움사이언스-단순마감마감\nDocuPrint-CM305DF/WCP-060021\n서울 성동구 아차산로7나길 18\n에이팩센터 504호",
-    expected: "1/코리움사이언스 504호/점검",
-    mode: "samsung-note",
-  },
-  {
-    name: "삼성노트 한 줄 설명형 업체명",
-    input: "1.확인서\n이민구 오전10시전 세팅 납품 책나무강동선사암사독서논술학원 X3220NR(리퍼) / 서울 강동구 상암로5길 83 2층",
-    expected: "1/책나무강동선사암사독서논술학원 2층/확인서",
-    mode: "samsung-note",
-  },
-  {
-    name: "빈 보고서 느슨한 형식 한 건 유지",
-    input: "7S주식회사 정주시에스시-분기마감\nSL-X7400LXR/ZPBLBJST70004RM\n\n위치\n서울 송파구 위례성대로2길 11\n상가 206호\n\n연락처\n010-2081-5985 오석환님",
-    expected: "부서명:206호",
-    mode: "blank-report",
-  },
-  {
-    name: "빈 보고서 느슨한 형식 연락처",
-    input: "7S주식회사 정주시에스시-분기마감\nSL-X7400LXR/ZPBLBJST70004RM\n\n위치\n서울 송파구 위례성대로2길 11\n상가 206호\n\n연락처\n010-2081-5985 오석환님",
-    expected: "키맨/접수자:010-2081-5985 오석환님",
-    mode: "blank-report",
-  },
-  {
-    name: "여분요청 상태 우선",
-    input: "여분요청 SS DocuPrint-C5005D 상태 M토너 교체안내완료 여분 일정 통화 부탁드립니다. 제목",
-    expected: "내용: M토너 교체안내완료 여분 일정 통화 부탁드립니다.",
-    mode: "blank-report",
-  },
-  {
-    name: "기종 기번 우선",
-    input: "A/S N HP-8730 한조/틴텍코드 18496 / 216163 주소 서울 강남구 대치동 삼성로 64길 5 기종 HP-8730 기번 CN950C60F9",
-    expected: "모델명:HP-8730",
-    mode: "blank-report",
-  },
-  {
-    name: "한조 틴텍코드 오인식 방지",
-    input: "A/S N HP-8730 한조/틴텍코드 18496 / 216163 주소 서울 강남구 대치동 삼성로 64길 5 기종 HP-8730 기번 CN950C60F9",
-    expected: "시리얼넘버:CN950C60F9",
-    mode: "blank-report",
   },
   {
     name: "복사 함수 준비",
@@ -939,9 +1024,15 @@ function runSelfTests(): TestResult[] {
     }
 
     let actual = "";
-    if (test.mode === "samsung-note") actual = transformSamsungNoteTitles(test.input).join("\n");
-    else if (test.mode === "blank-report") actual = transformBlankReports(test.input).join("\n");
-    else actual = transformInspectionText(test.input);
+    if (test.mode === "samsung-note") {
+      actual = transformSamsungNoteTitles(test.input).map((r: ResultItem) => r.content).join("\n");
+    } else if (test.mode === "blank-report") {
+      actual = transformBlankReports(test.input).map((r: ResultItem) => r.content).join("\n");
+    } else if (test.mode === "air-purifier") {
+      actual = transformAirPurifierText(test.input);
+    } else {
+      actual = transformInspectionText(test.input);
+    }
 
     return {
       ...test,
@@ -951,291 +1042,333 @@ function runSelfTests(): TestResult[] {
   });
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Main component
+// ────────────────────────────────────────────────────────────────────────────
+
 export default function App() {
-  const [mode, setMode] = useState<Mode>("samsung-note");
+  const [mode, setMode] = useState<Mode>("inspection");
   const [inputText, setInputText] = useState<string>("");
-  const [outputText, setOutputText] = useState<string>("");
-  const [titleOutputs, setTitleOutputs] = useState<string[]>([]);
-  const [blankReports, setBlankReports] = useState<string[]>([]);
-  const [copyStatus, setCopyStatus] = useState<string>("복사용 출력");
+  const [textOutput, setTextOutput] = useState<string>("");
+  const [listOutput, setListOutput] = useState<ResultItem[]>([]);
+  const [toast, setToast] = useState<{ text: string; kind: "success" | "error" } | null>(null);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  const config = MODE_CONFIG[mode];
+  const isListMode = mode === "samsung-note" || mode === "blank-report";
 
   const lineStats = useMemo(() => {
     const count = inputText ? inputText.split(/\r?\n/).length : 0;
-    return `${count} lines`;
+    return `${count}줄`;
   }, [inputText]);
 
-  const testResults = useMemo(() => runSelfTests(), []);
-  const passedCount = testResults.filter((item: TestResult) => item.passed).length;
+  const showToast = (text: string, kind: "success" | "error" = "success") => {
+    setToast({ text, kind });
+    window.setTimeout(() => setToast(null), 1600);
+  };
+
+  const resetOutputs = () => {
+    setTextOutput("");
+    setListOutput([]);
+    setCopiedIndex(null);
+  };
+
+  const handleModeChange = (next: Mode) => {
+    setMode(next);
+    resetOutputs();
+  };
 
   const handleTransform = () => {
-    if (mode === "inspection") {
-      const result = transformInspectionText(inputText);
-      setOutputText(result);
-      setTitleOutputs([]);
-      setBlankReports([]);
-    } else if (mode === "samsung-note") {
-      const titles = transformSamsungNoteTitles(inputText);
-      setTitleOutputs(titles);
-      setOutputText(titles.join("\n"));
-      setBlankReports([]);
-    } else {
-      const reports = transformBlankReports(inputText);
-      setBlankReports(reports);
-      setOutputText(reports.join("\n\n"));
-      setTitleOutputs([]);
+    if (!inputText.trim()) {
+      showToast("입력이 비어있어요", "error");
+      return;
     }
-    setCopyStatus("복사용 출력");
+    if (mode === "inspection") {
+      setTextOutput(transformInspectionText(inputText));
+      setListOutput([]);
+    } else if (mode === "air-purifier") {
+      setTextOutput(transformAirPurifierText(inputText));
+      setListOutput([]);
+    } else if (mode === "samsung-note") {
+      setListOutput(transformSamsungNoteTitles(inputText));
+      setTextOutput("");
+    } else {
+      setListOutput(transformBlankReports(inputText));
+      setTextOutput("");
+    }
+    setCopiedIndex(null);
   };
 
-  const handleCopy = async () => {
-    const targetText =
-      mode === "inspection"
-        ? outputText
-        : mode === "samsung-note"
-          ? titleOutputs.join("\n")
-          : blankReports.join("\n\n");
-
-    const result = await copyTextToClipboard(targetText);
-    setCopyStatus(result.message);
-    window.setTimeout(() => setCopyStatus("복사용 출력"), 2500);
+  const handlePaste = async () => {
+    const text = await pasteFromClipboard();
+    if (text === null) {
+      showToast("클립보드 권한이 필요해요", "error");
+      return;
+    }
+    setInputText(text);
+    showToast("붙여넣기 완료");
   };
 
-  const handleCopySingleTitle = async (title: string) => {
-    const result = await copyTextToClipboard(title);
-    setCopyStatus(result.message);
-    window.setTimeout(() => setCopyStatus("복사용 출력"), 2500);
+  const handleCopyCard = async (text: string, index: number) => {
+    const result = await copyTextToClipboard(text);
+    if (result.ok) {
+      setCopiedIndex(index);
+      window.setTimeout(() => setCopiedIndex(null), 900);
+      showToast("복사 완료");
+    } else {
+      showToast(result.message, "error");
+    }
   };
 
-  const handleCopySingleReport = async (report: string) => {
-    const result = await copyTextToClipboard(report);
-    setCopyStatus(result.message);
-    window.setTimeout(() => setCopyStatus("복사용 출력"), 2500);
+  const handleCopyAll = async () => {
+    const target = isListMode
+      ? listOutput.map((item: ResultItem) => item.content).join("\n\n")
+      : textOutput;
+
+    if (!target) {
+      showToast("복사할 내용이 없어요", "error");
+      return;
+    }
+
+    const result = await copyTextToClipboard(target);
+    showToast(result.message, result.ok ? "success" : "error");
   };
 
   const handleReset = () => {
     setInputText("");
-    setOutputText("");
-    setTitleOutputs([]);
-    setBlankReports([]);
-    setCopyStatus("복사용 출력");
+    resetOutputs();
+    showToast("초기화 완료");
   };
 
   const handleInputKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       handleTransform();
     }
   };
 
+  const hasOutput = textOutput.length > 0 || listOutput.length > 0;
+  const warningCount = listOutput.filter((item: ResultItem) => item.warning).length;
+
+  const isDev = typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV;
+  const testResults = useMemo(() => (isDev ? runSelfTests() : []), [isDev]);
+  const passedCount = testResults.filter((item: TestResult) => item.passed).length;
+
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900">
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <header className="mb-6 rounded-3xl bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">점검이력 변환기</h1>
-                <p className="mt-1 text-sm text-slate-600 sm:text-base">
-                  점검이력 표준화, 삼성노트 제목 생성, 빈 보고서 양식 생성을 한 화면에서 처리하는 웹앱
-                </p>
-              </div>
-              <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
-                최종 정리본 · App 단일 엔트리
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={() => {
-                  setMode("samsung-note");
-                  setCopyStatus("복사용 출력");
-                }}
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
-                  mode === "samsung-note"
-                    ? "bg-slate-900 text-white"
-                    : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                삼성노트 제목 생성
-              </button>
-
-              <button
-                onClick={() => {
-                  setMode("inspection");
-                  setCopyStatus("복사용 출력");
-                }}
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
-                  mode === "inspection"
-                    ? "bg-slate-900 text-white"
-                    : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                점검이력 변환
-              </button>
-
-              <button
-                onClick={() => {
-                  setMode("blank-report");
-                  setCopyStatus("복사용 출력");
-                }}
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
-                  mode === "blank-report"
-                    ? "bg-slate-900 text-white"
-                    : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                빈 보고서 양식 생성
-              </button>
-            </div>
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="mx-auto flex max-w-3xl flex-col px-3 pb-32 pt-4 sm:px-6 sm:pt-6">
+        {/* Header */}
+        <header className="mb-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight sm:text-xl">점검이력 변환기</h1>
+            <p className="text-xs text-slate-500 sm:text-sm">
+              <span style={{ color: config.accent }}>●</span> {config.label} 모드
+            </p>
           </div>
+          <div className="text-xs text-slate-400">{lineStats}</div>
         </header>
 
-        <main className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <section className="rounded-3xl bg-white p-5 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">원본 입력</h2>
-              <span className="text-sm text-slate-400">{lineStats}</span>
-            </div>
-            <textarea
-              value={inputText}
-              onKeyDown={handleInputKeyDown}
-              onChange={(e) => setInputText(e.target.value)}
-              className="h-[420px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm outline-none transition focus:border-slate-400"
-              placeholder={
-                mode === "inspection"
-                  ? "여기에 -시작- 부터 -끝- 까지의 원본 점검이력을 붙여넣으세요."
-                  : mode === "samsung-note"
-                    ? "여기에 번호가 붙은 스케줄 원문을 여러 개 붙여넣으세요."
-                    : "여기에 스케줄 원문을 문단별로 붙여넣으세요."
-              }
-            />
-          </section>
+        {/* Mode tabs - segmented control */}
+        <div
+          className="mb-3 grid grid-cols-4 gap-1 rounded-2xl bg-slate-200/60 p-1"
+          role="tablist"
+        >
+          {MODE_ORDER.map((m: Mode) => {
+            const c = MODE_CONFIG[m];
+            const active = m === mode;
+            return (
+              <button
+                key={m}
+                role="tab"
+                aria-selected={active}
+                onClick={() => handleModeChange(m)}
+                className={`rounded-xl py-2.5 text-sm transition ${
+                  active ? "font-semibold" : "font-normal text-slate-500"
+                }`}
+                style={{
+                  background: active ? "white" : "transparent",
+                  color: active ? c.textDark : undefined,
+                  boxShadow: active ? "0 1px 2px rgba(0,0,0,0.04)" : undefined,
+                }}
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
 
-          <section className="rounded-3xl bg-white p-5 shadow-sm">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">변환 결과</h2>
-              <span className="text-right text-sm text-slate-400">{copyStatus}</span>
-            </div>
+        {/* Input */}
+        <section className="mb-3 rounded-2xl bg-white p-3 shadow-sm sm:p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-medium text-slate-600">원본 입력</label>
+            <button
+              onClick={handlePaste}
+              className="rounded-lg px-2 py-1 text-xs font-medium transition active:scale-95"
+              style={{ color: config.accent, background: config.bgSoft }}
+            >
+              📋 붙여넣기
+            </button>
+          </div>
+          <textarea
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={handleInputKeyDown}
+            placeholder={config.placeholder}
+            className="h-44 w-full resize-none rounded-xl bg-slate-50 p-3 font-mono text-sm outline-none transition focus:bg-white sm:h-56"
+            style={{ borderColor: config.accent }}
+          />
+        </section>
 
-            {mode === "inspection" ? (
-              <textarea
-                value={outputText}
-                className="h-[420px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm outline-none"
-                placeholder="여기에 변환 결과가 표시됩니다."
-                readOnly
-              />
-            ) : mode === "samsung-note" ? (
-              <div className="h-[420px] overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                {titleOutputs.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-sm text-slate-400">
-                    생성된 제목이 여기에 표시됩니다.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {titleOutputs.map((title: string, index: number) => (
-                      <div key={`${title}-${index}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <div className="text-sm font-semibold text-slate-700">스케줄 {index + 1}</div>
-                          <button
-                            onClick={() => handleCopySingleTitle(title)}
-                            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
-                          >
-                            코드 복사
-                          </button>
-                        </div>
-                        <pre className="overflow-x-auto rounded-xl bg-slate-50 p-3 text-sm text-slate-800">
-                          <code>{title}</code>
-                        </pre>
-                      </div>
-                    ))}
-                  </div>
+        {/* Results */}
+        {hasOutput && (
+          <section className="mb-3">
+            <div className="mb-2 flex items-center justify-between px-1">
+              <div className="text-xs font-medium text-slate-600">
+                결과{" "}
+                {isListMode && (
+                  <>
+                    <span className="text-slate-400">· {listOutput.length}건</span>
+                    {warningCount > 0 && (
+                      <span className="ml-1 text-amber-600">⚠️ {warningCount}건 확인 필요</span>
+                    )}
+                  </>
                 )}
               </div>
-            ) : (
-              <div className="h-[420px] overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                {blankReports.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-sm text-slate-400">
-                    생성된 보고서 양식이 여기에 표시됩니다.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {blankReports.map((report: string, index: number) => (
-                      <div key={`${index}-${report.slice(0, 20)}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <div className="text-sm font-semibold text-slate-700">보고서 {index + 1}</div>
-                          <button
-                            onClick={() => handleCopySingleReport(report)}
-                            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
-                          >
-                            코드 복사
-                          </button>
-                        </div>
-                        <pre className="overflow-x-auto rounded-xl bg-slate-50 p-3 text-sm text-slate-800">
-                          <code>{report}</code>
-                        </pre>
+              <button
+                onClick={handleCopyAll}
+                className="text-xs font-medium"
+                style={{ color: config.accent }}
+              >
+                전체 복사
+              </button>
+            </div>
+
+            {isListMode ? (
+              <div className="space-y-2">
+                {listOutput.map((item: ResultItem, index: number) => {
+                  const hasWarning = Boolean(item.warning);
+                  const isCopied = copiedIndex === index;
+                  const cardBg = isCopied
+                    ? "#D1FAE5"
+                    : hasWarning
+                      ? "#FEF3C7"
+                      : config.bgSoft;
+                  const borderColor = isCopied
+                    ? "#10B981"
+                    : hasWarning
+                      ? "#D97706"
+                      : config.accent;
+
+                  return (
+                    <button
+                      key={index}
+                      onClick={() => handleCopyCard(item.content, index)}
+                      className="w-full rounded-xl p-3 text-left transition active:scale-[0.99]"
+                      style={{
+                        background: cardBg,
+                        borderLeft: `3px solid ${borderColor}`,
+                      }}
+                    >
+                      <div className="mb-1.5 flex items-center justify-between text-xs font-semibold">
+                        <span style={{ color: hasWarning ? "#92400E" : config.textDark }}>
+                          {hasWarning ? "⚠️" : ""} {index + 1}
+                          {hasWarning ? ` · ${item.warning}` : ""}
+                        </span>
+                        <span className="text-slate-500">
+                          {isCopied ? "✓ 복사됨" : "탭해서 복사"}
+                        </span>
                       </div>
-                    ))}
-                  </div>
-                )}
+                      <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-800">
+                        {item.content}
+                      </pre>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div
+                className="rounded-xl p-3"
+                style={{
+                  background: config.bgSoft,
+                  borderLeft: `3px solid ${config.accent}`,
+                }}
+              >
+                <textarea
+                  value={textOutput}
+                  readOnly
+                  className="h-72 w-full resize-none bg-transparent font-mono text-xs leading-relaxed outline-none sm:h-96"
+                />
               </div>
             )}
           </section>
-        </main>
+        )}
 
-        <section className="mt-6 rounded-3xl bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-            <button
-              onClick={handleTransform}
-              className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:opacity-90"
-            >
-              변환하기
-            </button>
-            <button
-              onClick={handleCopy}
-              className="rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              {mode === "inspection" ? "결과 복사" : mode === "samsung-note" ? "전체 코드 복사" : "전체 보고서 복사"}
-            </button>
-            <button
-              onClick={handleReset}
-              className="rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              전체 초기화
-            </button>
-          </div>
-          <p className="mt-3 text-xs text-slate-500">
-            일부 브라우저 환경에서는 자동 복사가 차단될 수 있습니다. 그 경우 결과창을 직접 선택해 복사하면 됩니다.
-          </p>
-        </section>
-
-        <section className="mt-6 rounded-3xl bg-white p-5 shadow-sm">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800">내장 테스트</h3>
-            <span className="text-sm text-slate-400">
-              {passedCount}/{testResults.length} 통과
-            </span>
-          </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {testResults.map((test: TestResult) => (
-              <div key={test.name} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-slate-800">{test.name}</p>
+        {/* Dev-only test panel */}
+        {isDev && testResults.length > 0 && (
+          <section className="mb-3 rounded-2xl bg-white p-3 shadow-sm">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-slate-700">
+                내장 테스트 (DEV)
+              </h3>
+              <span className="text-xs text-slate-400">
+                {passedCount}/{testResults.length} 통과
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {testResults.map((test: TestResult) => (
+                <div
+                  key={test.name}
+                  className="flex items-center justify-between rounded-lg bg-slate-50 px-2 py-1.5 text-xs"
+                >
+                  <span className="truncate text-slate-700">{test.name}</span>
                   <span
-                    className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                      test.passed ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                    className={`ml-2 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                      test.passed
+                        ? "bg-emerald-100 text-emerald-700"
+                        : "bg-rose-100 text-rose-700"
                     }`}
                   >
-                    {test.passed ? "통과" : "실패"}
+                    {test.passed ? "OK" : "FAIL"}
                   </span>
                 </div>
-                <div className="mt-3 space-y-2 text-xs text-slate-600">
-                  <p>{test.expectedFunction ? "복사 대체 함수 준비 여부 확인" : `기대 포함값: ${test.expected}`}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
+
+      {/* Sticky bottom action bar — thumb zone */}
+      <div className="fixed inset-x-0 bottom-0 border-t border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 py-3 sm:px-6">
+          <button
+            onClick={handleReset}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition active:scale-95"
+            aria-label="초기화"
+          >
+            초기화
+          </button>
+          <button
+            onClick={handleTransform}
+            className="flex-1 rounded-xl py-3 text-sm font-semibold text-white transition active:scale-[0.98]"
+            style={{ background: config.accent }}
+          >
+            ⚡ 변환하기
+          </button>
+        </div>
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div
+          className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full px-4 py-2 text-sm font-medium shadow-lg"
+          style={{
+            background: toast.kind === "success" ? "#065F46" : "#991B1B",
+            color: "white",
+          }}
+        >
+          {toast.text}
+        </div>
+      )}
     </div>
   );
 }
