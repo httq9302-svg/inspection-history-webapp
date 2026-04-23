@@ -393,9 +393,7 @@ function normalizeAirPurifierItemBlock(blockLines: string[], blockIndex: number)
   ];
 }
 
-function transformAirPurifierText(input: string): string {
-  if (!input || !input.trim()) return "";
-
+function transformAirPurifierStructured(input: string): string {
   const lines = input.split(/\r?\n/);
   const firstDividerIndex = lines.findIndex((line: string) => isDividerLine(line));
   const itemStartIndex = firstDividerIndex >= 0 ? firstDividerIndex : lines.length;
@@ -416,6 +414,300 @@ function transformAirPurifierText(input: string): string {
   });
 
   return [...normalizedHeader, ...normalizedItemSection, ...STANDARD_PARTS_SECTION].join("\n");
+}
+
+function buildAirPurifierFromFields(
+  blockIndex: number,
+  grade: string,
+  company: string,
+  department: string,
+  keyman: string,
+  model: string,
+  serial: string,
+  assetNumber: string
+): string[] {
+  const header = [
+    "작성자: ",
+    "구분: 점검",
+    "레벨: 1",
+    `등급: ${grade}`,
+    `업체명: ${company}`,
+    `부서명: ${department}`,
+    "지역: C",
+    `키맨/접수자:${keyman}`,
+  ];
+
+  const item = [
+    ITEM_DIVIDER,
+    `${blockIndex + 1}.`,
+    `모델명: ${model}`,
+    `시리얼넘버: ${serial}`,
+    `자산기번: ${assetNumber}`,
+    "내용: 정기점검",
+    "처리내용: 정기점검",
+    "필터리셋:",
+    "필터교체:",
+    "특이사항:",
+  ];
+
+  return [...header, ...item];
+}
+
+function buildAirPurifierFromCompact(input: string): string {
+  const blocks = splitCompactBlocks(input);
+  const sections: string[] = [];
+
+  blocks.forEach((block: string[], index: number) => {
+    if (block.length === 0) return;
+
+    const gradeCompanyLine = block[0] || "";
+    const modelSerialLine = block[1] || "";
+    const addressLine = block[2] || "";
+    const phoneLines = block.slice(3);
+
+    const grade = extractGrade(gradeCompanyLine);
+    const company = extractCompactCompany(gradeCompanyLine);
+    const { model, serial } = parseCompactModelSerial(modelSerialLine);
+    const department = extractDepartment(addressLine);
+    const keymanSegments = phoneLines.flatMap((l: string) => splitPhoneLine(l));
+    const keyman = keymanSegments.length > 0 ? keymanSegments.join("\n") : "";
+
+    const out = buildAirPurifierFromFields(
+      index,
+      grade,
+      company,
+      department,
+      keyman,
+      model,
+      serial,
+      ""
+    );
+
+    if (index === 0) {
+      sections.push(...out);
+    } else {
+      // subsequent blocks: repeat only item section (kept minimal — rare case)
+      sections.push(...out);
+    }
+  });
+
+  sections.push(...STANDARD_PARTS_SECTION);
+  return sections.join("\n");
+}
+
+function buildAirPurifierFromTable(input: string): string {
+  const rawText = input;
+  const flatText = input.replace(/[\t\r]+/g, " ");
+
+  const grade = extractGrade(flatText);
+  const company = extractTableCompany(rawText);
+  const department = extractDepartment(flatText);
+  const keyman = extractTableKeyman(rawText);
+  const tableMs = extractTableModelSerial(rawText);
+  const fallbackMs = extractModelAndSerial(flatText);
+  const ms: ModelSerial = {
+    model: tableMs.model || fallbackMs.model,
+    serial: tableMs.serial || fallbackMs.serial,
+  };
+  const assetNumber = extractAssetNumber(flatText);
+
+  const out = buildAirPurifierFromFields(
+    0,
+    grade,
+    company,
+    department,
+    keyman,
+    ms.model,
+    ms.serial,
+    assetNumber
+  );
+
+  return [...out, ...STANDARD_PARTS_SECTION].join("\n");
+}
+
+function transformAirPurifierText(input: string): string {
+  if (!input || !input.trim()) return "";
+
+  const format = detectInputFormat(input);
+  if (format === "compact") return buildAirPurifierFromCompact(input);
+  if (format === "table") return buildAirPurifierFromTable(input);
+  return transformAirPurifierStructured(input);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Shared multi-format extractors (used by Air Purifier and Blank Report)
+// ────────────────────────────────────────────────────────────────────────────
+
+type InputFormat = "compact" | "structured" | "table";
+
+function detectInputFormat(input: string): InputFormat {
+  if (
+    /기번\s+\S/.test(input) ||
+    /접수자성함\s+\S/.test(input) ||
+    /접수자연락처\s+\S/.test(input) ||
+    /★?키맨성함\/번호\s+\S/.test(input) ||
+    /자산번호\s+[A-Z]/.test(input)
+  ) {
+    return "table";
+  }
+
+  if (/^\s*구분\s*:/m.test(input) && /^\s*업체명\s*:/m.test(input)) {
+    return "structured";
+  }
+
+  return "compact";
+}
+
+// Company extraction — handles "17S㈜프리즘산업-매월마감" or "31SS주식회사 에이피더핀..."
+function extractCompactCompany(line: string): string {
+  const match = line.match(
+    /^\s*\d+(?:NN|SS|S|N|V)([^\n]*?)(?:분기마감|매월마감|매년마감|오픈\s*\d*시?반?|단순마감마감|단순마감|$)/
+  );
+  if (!match) return "";
+  return match[1]
+    .trim()
+    .replace(/^㈜\s*/, "")
+    .replace(/-\s*$/, "")
+    .trim();
+}
+
+// Table-format company — preserves newlines inside quoted "19V...매월마감" blocks
+function extractTableCompany(rawText: string): string {
+  const quotedGradeMatch = rawText.match(
+    /"\s*\d+(?:NN|SS|S|N|V)?\s*([\s\S]*?)\s*(?:분기마감|매월마감|매년마감)\s*"/
+  );
+  if (quotedGradeMatch) {
+    return quotedGradeMatch[1].trim().replace(/^㈜\s*/, "");
+  }
+
+  const lines = rawText.split(/\r?\n/);
+  for (const line of lines) {
+    const gradeMatch = line.match(
+      /^\s*\d+(?:NN|SS|S|N|V)([^\n]*?)(?:분기마감|매월마감|매년마감|오픈\s*\d*시?반?|단순마감마감|단순마감)/
+    );
+    if (gradeMatch) {
+      return gradeMatch[1].trim().replace(/^㈜\s*/, "").replace(/-\s*$/, "");
+    }
+  }
+
+  return extractCompanyForTemplate(rawText);
+}
+
+// Table-format model/serial — handles tab-separated "기종\tMODEL\t..." and "기번\t\"SERIAL\n..."
+function extractTableModelSerial(rawText: string): ModelSerial {
+  // Model: "기종" + tab/whitespace + value + (tab/newline/next-label)
+  const modelMatch = rawText.match(
+    /기종\s*[\t ]+\s*"?\s*([^\t\n"]+?)\s*(?:"|\t|\n|기기상태|접수분야|$)/
+  );
+  // Serial: "기번" + tab/whitespace + optional quote + alphanumeric (first line only)
+  const serialMatch = rawText.match(/기번\s*[\t ]+\s*"?\s*([A-Z0-9-]+)/i);
+
+  return {
+    model: modelMatch ? modelMatch[1].trim() : "",
+    serial: serialMatch ? serialMatch[1].trim() : "",
+  };
+}
+
+// Compact model/serial: "샤오미 MI-AIR/318115/00036240" → model + (rest as serial)
+function parseCompactModelSerial(line: string): ModelSerial {
+  const trimmed = line.trim();
+  const firstSlash = trimmed.indexOf("/");
+  if (firstSlash < 0) return { model: trimmed, serial: "" };
+  return {
+    model: trimmed.slice(0, firstSlash).trim(),
+    serial: trimmed.slice(firstSlash + 1).trim(),
+  };
+}
+
+// Split phone line like "010-A 김/010-B 이 070-C 박" into one line per contact
+function splitPhoneLine(rawLine: string): string[] {
+  const segments = rawLine
+    .split("/")
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+
+  const result: string[] = [];
+  for (const seg of segments) {
+    const phoneMatches = [...seg.matchAll(/\d{2,3}-?\d{3,4}-?\d{4}/g)];
+    if (phoneMatches.length <= 1) {
+      result.push(seg);
+      continue;
+    }
+    for (let i = 0; i < phoneMatches.length; i += 1) {
+      const start = phoneMatches[i].index ?? 0;
+      const end =
+        i + 1 < phoneMatches.length ? (phoneMatches[i + 1].index ?? seg.length) : seg.length;
+      const piece = seg.slice(start, end).trim();
+      if (piece) result.push(piece);
+    }
+  }
+  return result;
+}
+
+// Table-format keyman: 접수자성함+접수자연락처 / 일반전화 / ★키맨성함·번호
+function extractTableKeyman(rawText: string): string {
+  const lines: string[] = [];
+
+  const nameMatch = rawText.match(
+    /접수자성함\s+([^\n\t]+?)(?=\s*(?:접수자연락처|\n|\t|$))/
+  );
+  const contactPhoneMatch = rawText.match(
+    /접수자연락처\s+(01\d[- ]?\d{3,4}[- ]?\d{4}|0\d{1,2}[- ]?\d{3,4}[- ]?\d{4})/
+  );
+
+  const name = nameMatch ? nameMatch[1].trim() : "";
+  const phone = contactPhoneMatch ? contactPhoneMatch[1].trim() : "";
+
+  if (name && phone) {
+    lines.push(`${name} ${phone}`);
+  } else if (phone) {
+    lines.push(phone);
+  } else if (name) {
+    lines.push(name);
+  }
+
+  const landlineMatch = rawText.match(/일반전화\s+(0\d{1,2}[- ]?\d{3,4}[- ]?\d{4})/);
+  if (landlineMatch) {
+    lines.push(landlineMatch[1].trim());
+  }
+
+  const keymanMatch = rawText.match(
+    /★?키맨성함\/번호\s+([^\n\t]+?)(?=\s*(?:\n|\t|방문담당자|한조\/틴텍코드|주소|확장성|$))/
+  );
+  if (keymanMatch) {
+    lines.push(keymanMatch[1].trim());
+  }
+
+  if (lines.length === 0) {
+    const fallback = extractPhonesWithContext(rawText);
+    if (fallback) return fallback;
+  }
+
+  return lines.join("\n");
+}
+
+// Split compact input block(s) — one block per 4-line group (company/model/address/phone)
+function splitCompactBlocks(input: string): string[][] {
+  const lines = input
+    .split(/\r?\n/)
+    .map((l: string) => l.trim())
+    .filter(Boolean);
+
+  const blocks: string[][] = [];
+  let current: string[] = [];
+
+  for (const line of lines) {
+    // Grade-company header marks start of a new block
+    const isGradeCompanyLine = /^\s*\d+(?:NN|SS|S|N|V)[^0-9]/.test(line);
+    if (isGradeCompanyLine && current.length > 0) {
+      blocks.push(current);
+      current = [];
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current);
+
+  return blocks.length > 0 ? blocks : [lines];
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -546,6 +838,35 @@ function applyCompanyStop(raw: string): string {
   return result.trim();
 }
 
+const KOREA_REGION_PATTERN =
+  "서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주";
+
+function extractCompanyBeforeModel(line: string): string {
+  const pattern = new RegExp(
+    `([가-힣][가-힣A-Za-z0-9]{1,})\\s+[A-Z][A-Za-z0-9,-]{2,}(?:\\([^)]*\\))?\\s*\\/\\s*(?:${KOREA_REGION_PATTERN})`
+  );
+  const m = line.match(pattern);
+  if (m) {
+    const candidate = m[1].trim();
+    if (candidate.length >= 2 && candidate.length <= 30) return candidate;
+  }
+  return "";
+}
+
+function extractTaskFromBody(lines: string[]): string {
+  const pattern = new RegExp(
+    `(?:^|\\s)([가-힣]{2,}[가-힣A-Za-z0-9]*)\\s+[가-힣][가-힣A-Za-z0-9]+\\s+[A-Z][A-Za-z0-9,-]{2,}(?:\\([^)]*\\))?\\s*\\/\\s*(?:${KOREA_REGION_PATTERN})`
+  );
+  for (let i = 1; i < lines.length; i += 1) {
+    const m = lines[i].match(pattern);
+    if (m) {
+      const task = m[1].trim();
+      if (task.length >= 2 && task.length <= 20) return task;
+    }
+  }
+  return "";
+}
+
 function extractCompanyFromBodyLine(line: string): string {
   if (!line) return "";
 
@@ -580,6 +901,10 @@ function extractCompanyFromBodyLine(line: string): string {
     const result = applyCompanyStop(afterAnchor);
     if (result && /[가-힣]{2,}/.test(result)) return result;
   }
+
+  // Model-based: "[company] [MODEL] / [region]"
+  const beforeModel = extractCompanyBeforeModel(raw);
+  if (beforeModel) return beforeModel;
 
   // Final fallback: suffix-word pattern (학원, 교회, 의원...)
   const suffixWord = extractCompanyBySuffixWord(raw);
@@ -631,7 +956,8 @@ function extractScheduleSummary(lines: string[], scheduleIndex: number): ResultI
     summary = summaryAfterSlash || firstLineContent || "점검";
   } else if (bodyCompany) {
     company = bodyCompany;
-    summary = firstLineContent || "점검";
+    const bodyTask = firstLineContent ? "" : extractTaskFromBody(lines);
+    summary = firstLineContent || bodyTask || "점검";
   } else if (candidateCompany) {
     // No body confirmation but first line has slash — still use it
     company = candidateCompany;
@@ -700,7 +1026,7 @@ function extractReportLevel(text: string, type: string): string {
 function extractGrade(text: string): string {
   const tokenMatch = text.match(/(?:^|\s)(NN|SS|S|N|V)(?=\s|$)/);
   if (tokenMatch) return tokenMatch[1];
-  const companyPrefixedMatch = text.match(/(?:^|\s)\d+(NN|SS|S|N|V)(?=[가-힣("])/);
+  const companyPrefixedMatch = text.match(/(?:^|\s)\d+(NN|SS|S|N|V)(?=[^A-Za-z0-9])/);
   if (companyPrefixedMatch) return companyPrefixedMatch[1];
   return "";
 }
@@ -730,8 +1056,20 @@ function extractCompanyForTemplate(text: string): string {
 }
 
 function extractDepartment(text: string): string {
-  const match = text.match(/(\d+호|\d+층)/);
-  if (match) return match[1];
+  // Prefer whitespace-anchored 1-2 digit floor: " 7층", " 11층"
+  const spacedFloorMatch = text.match(/(?:^|\s)(\d{1,2})층/);
+  if (spacedFloorMatch) return `${spacedFloorMatch[1]}층`;
+
+  // Merged form like "107층" → typically building# + floor → take trailing digit
+  const mergedFloorMatch = text.match(/(\d+)층/);
+  if (mergedFloorMatch) {
+    const num = mergedFloorMatch[1];
+    if (num.length <= 2) return `${num}층`;
+    return `${num.slice(-1)}층`;
+  }
+
+  const hoMatch = text.match(/(\d+호)/);
+  if (hoMatch) return hoMatch[1];
   const suiteMatch = text.match(/상가\s*(\d+호)/);
   if (suiteMatch) return suiteMatch[1];
   return "";
@@ -815,34 +1153,36 @@ function extractTemplateProcessContent(_text: string, type: string): string {
   return "";
 }
 
-function buildBlankReport(blockLines: string[]): ResultItem {
-  const text = blockLines.join(" ");
-  const type = extractReportType(text);
-  const level = extractReportLevel(text, type);
-  const grade = extractGrade(text);
-  const company = extractCompanyForTemplate(text);
-  const department = extractDepartment(text);
-  const keyman = extractPhonesWithContext(text);
-  const ms = extractModelAndSerial(text);
-  const assetNumber = extractAssetNumber(text);
-  const content = extractTemplateContent(text, type);
-  const processContent = extractTemplateProcessContent(text, type);
+type PrinterReportFields = {
+  type: string;
+  level: string;
+  grade: string;
+  company: string;
+  department: string;
+  keyman: string;
+  model: string;
+  serial: string;
+  assetNumber: string;
+  content: string;
+  processContent: string;
+};
 
-  const body = [
+function formatPrinterReport(f: PrinterReportFields): string {
+  return [
     "작성자:",
-    `구분:${type}`,
-    `레벨:${level}`,
-    `등급:${grade}`,
-    `업체명:${company}`,
-    `부서명:${department}`,
+    `구분:${f.type}`,
+    `레벨:${f.level}`,
+    `등급:${f.grade}`,
+    `업체명:${f.company}`,
+    `부서명:${f.department}`,
     "지역:C",
-    `키맨/접수자:${keyman}`,
+    `키맨/접수자:${f.keyman}`,
     ITEM_DIVIDER,
-    `모델명:${ms.model}`,
-    `시리얼넘버:${ms.serial}`,
-    `자산기번: ${assetNumber}`,
-    `내용: ${content}`,
-    `처리내용:${processContent ? ` ${processContent}` : ""}`,
+    `모델명:${f.model}`,
+    `시리얼넘버:${f.serial}`,
+    `자산기번: ${f.assetNumber}`,
+    `내용: ${f.content}`,
+    `처리내용:${f.processContent ? ` ${f.processContent}` : ""}`,
     "매수:흑- 컬- 큰컬- 합-",
     "토너잔량:K- C- M- Y-",
     "폐통:  %",
@@ -868,6 +1208,87 @@ function buildBlankReport(blockLines: string[]): ResultItem {
     "도착 시간:",
     "소요 시간:",
   ].join("\n");
+}
+
+function buildBlankReportCompact(blockLines: string[]): ResultItem {
+  const gradeCompanyLine = blockLines[0] || "";
+  const modelSerialLine = blockLines[1] || "";
+  const addressLine = blockLines[2] || "";
+  const phoneLines = blockLines.slice(3);
+
+  const grade = extractGrade(gradeCompanyLine);
+  const company = extractCompactCompany(gradeCompanyLine);
+  const { model, serial } = parseCompactModelSerial(modelSerialLine);
+  const department = extractDepartment(addressLine);
+  const keymanSegments = phoneLines.flatMap((l: string) => splitPhoneLine(l));
+  const keyman = keymanSegments.join("\n");
+
+  const body = formatPrinterReport({
+    type: "점검",
+    level: "1",
+    grade,
+    company,
+    department,
+    keyman,
+    model,
+    serial,
+    assetNumber: "",
+    content: "정기점검",
+    processContent: "정기점검",
+  });
+
+  const warnings: string[] = [];
+  if (!company) warnings.push("업체명 추출 실패");
+  if (!model && !serial) warnings.push("모델/시리얼 추출 실패");
+  if (!keyman) warnings.push("연락처 추출 실패");
+
+  return {
+    content: body,
+    warning: warnings.length > 0 ? warnings.join(" · ") : undefined,
+  };
+}
+
+function buildBlankReport(blockLines: string[]): ResultItem {
+  const rawText = blockLines.join("\n");
+  const flatText = blockLines.join(" ");
+  const format = detectInputFormat(rawText);
+
+  const type = extractReportType(flatText);
+  const level = extractReportLevel(flatText, type);
+  const grade = extractGrade(flatText);
+  const company =
+    format === "table" ? extractTableCompany(rawText) : extractCompanyForTemplate(flatText);
+  const department = extractDepartment(flatText);
+  const keyman =
+    format === "table" ? extractTableKeyman(rawText) : extractPhonesWithContext(flatText);
+  const ms: ModelSerial = (() => {
+    if (format === "table") {
+      const table = extractTableModelSerial(rawText);
+      const fallback = extractModelAndSerial(flatText);
+      return {
+        model: table.model || fallback.model,
+        serial: table.serial || fallback.serial,
+      };
+    }
+    return extractModelAndSerial(flatText);
+  })();
+  const assetNumber = extractAssetNumber(flatText);
+  const content = extractTemplateContent(flatText, type);
+  const processContent = extractTemplateProcessContent(flatText, type);
+
+  const body = formatPrinterReport({
+    type,
+    level,
+    grade,
+    company,
+    department,
+    keyman,
+    model: ms.model,
+    serial: ms.serial,
+    assetNumber,
+    content,
+    processContent,
+  });
 
   const warnings: string[] = [];
   if (!company) warnings.push("업체명 추출 실패");
@@ -881,6 +1302,14 @@ function buildBlankReport(blockLines: string[]): ResultItem {
 }
 
 function transformBlankReports(input: string): ResultItem[] {
+  if (!input || !input.trim()) return [];
+
+  const format = detectInputFormat(input);
+  if (format === "compact") {
+    const blocks = splitCompactBlocks(input);
+    return blocks.map((block: string[]) => buildBlankReportCompact(block));
+  }
+
   const blocks = splitParagraphBlocks(input);
   return blocks.map((block: string[]) => buildBlankReport(block));
 }
@@ -1038,6 +1467,69 @@ const TEST_CASES: TestCase[] = [
     input: "1.올리브인터내셔널/모니터 전달\n주식회사 올리브인터내셔널 AK빌딩 4층\n2.알스퀘어 신한리츠운용/랜선2개\n5.알스퀘어디자인-신한리츠운용 그레이츠강남\n7. 주소 서울 서초구 1층\n3.블레이드/k드럼 분해PM\nN ECOSYS \"4N주식회사 그리드엔터테인먼트-전 주식회사\n4.1대\n14SS주식회사 광운송파구 > 강남구분기마감\n5.\n4NN주식회사 팬틱스-전 주식회사 분기마감\n2층\n6.9대\n25V신우개발㈜3층",
     expected: "6/신우개발 3층/9대",
     mode: "samsung-note",
+  },
+  {
+    name: "청정기 compact 입력 - 등급/업체명/부서명",
+    input:
+      "17S㈜프리즘산업-매월마감\n샤오미 MI-AIR/318115/00036240\n서울 강남구 테헤란로22길 107층 프리즘산업 (프리즘빌딩, 서울 강남구 역삼동 736-35)\n010-9312-7412 이영선/010-9312-7412 이영선",
+    expected: "업체명: 프리즘산업",
+    mode: "air-purifier",
+  },
+  {
+    name: "청정기 compact 입력 - 부서명 107층 → 7층",
+    input:
+      "17S㈜프리즘산업-매월마감\n샤오미 MI-AIR/318115/00036240\n서울 강남구 테헤란로22길 107층 프리즘산업\n010-9312-7412 이영선",
+    expected: "부서명: 7층",
+    mode: "air-purifier",
+  },
+  {
+    name: "청정기 compact 입력 - 모델/시리얼 슬래시 분리",
+    input:
+      "17S㈜프리즘산업-매월마감\n샤오미 MI-AIR/318115/00036240\n서울 강남구 테헤란로22길 107층\n010-9312-7412 이영선",
+    expected: "시리얼넘버: 318115/00036240",
+    mode: "air-purifier",
+  },
+  {
+    name: "미양식 compact 입력 - 주식회사 유지",
+    input:
+      "31SS주식회사 에이피더핀(AP The Fin Inc)중앙쪽매월마감\nECOSYS-M5521CDN/VUY2Z03481\n서울 강남구 테헤란로 218에이피타워 11층 (AP Tower)\n010-6822-9591/070-4850-8726 이수민선임 010-8131-1966 이세희선임(경영지원)",
+    expected: "업체명:주식회사 에이피더핀(AP The Fin Inc)중앙쪽",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 compact 입력 - 키맨 여러 전화번호 분리",
+    input:
+      "31SS주식회사 에이피더핀매월마감\nECOSYS-M5521CDN/VUY2Z03481\n서울 강남구 11층\n010-6822-9591/070-4850-8726 이수민선임 010-8131-1966 이세희선임(경영지원)",
+    expected: "010-8131-1966 이세희선임(경영지원)",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table 입력 - 업체명 여러 줄 유지",
+    input:
+      'A/S\tV\tApeosPort-VI C3371(베니)\t"19V엔티에스케이투\nK2 성수 2층 CS팀-문서용매월마감"\n기번\t"665941\nIP-211-63-14-146"\t자산번호\tC3686\n접수자성함\t양명호\n접수자연락처\t010-6314-7409\n일반전화\t02-3408-8507\n★키맨성함/번호\t양명호 차장 010-6314-7409\n기종\tApeosPort-VI C3371(베니)\t기기상태\t확인요망\n상태\t출력시 묻어나옴',
+    expected: "K2 성수 2층 CS팀-문서용",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table 입력 - 모델명 전체 추출",
+    input:
+      'A/S\tV\tApeosPort-VI C3371(베니)\t"19V엔티에스케이투\nK2 성수 2층 CS팀-문서용매월마감"\n기번\t"665941\nIP-211-63-14-146"\t자산번호\tC3686\n기종\tApeosPort-VI C3371(베니)\t기기상태\t확인요망',
+    expected: "모델명:ApeosPort-VI C3371(베니)",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table 입력 - 시리얼 인용구 내부 추출",
+    input:
+      'A/S\tV\t모델\t"19V회사매월마감"\n기번\t"665941\nIP-211-63-14-146"\t자산번호\tC3686',
+    expected: "시리얼넘버:665941",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table 입력 - 키맨 3줄 (접수자/일반/★키맨)",
+    input:
+      'A/S\tV\t모델\t"19V회사매월마감"\n접수자성함\t양명호\n접수자연락처\t010-6314-7409\n일반전화\t02-3408-8507\n★키맨성함/번호\t양명호 차장 010-6314-7409',
+    expected: "02-3408-8507",
+    mode: "blank-report",
   },
   {
     name: "복사 함수 준비",
@@ -1373,17 +1865,26 @@ export default function App() {
         <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 py-3 sm:px-6">
           <button
             onClick={handleReset}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition active:scale-95"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-medium text-slate-600 transition active:scale-95"
             aria-label="초기화"
           >
             초기화
           </button>
           <button
             onClick={handleTransform}
-            className="flex-1 rounded-xl py-3 text-sm font-semibold text-white transition active:scale-[0.98]"
+            className="shrink-0 rounded-xl px-5 py-3 text-sm font-semibold text-white transition active:scale-[0.98]"
             style={{ background: config.accent }}
           >
-            ⚡ 변환하기
+            ⚡ 변환
+          </button>
+          <button
+            onClick={handleCopyAll}
+            disabled={!hasOutput}
+            className="flex-1 rounded-xl border-2 bg-white py-3 text-sm font-semibold transition active:scale-[0.98] disabled:border-slate-200 disabled:text-slate-300"
+            style={hasOutput ? { borderColor: config.accent, color: config.accent } : undefined}
+            aria-label="결과 전체 복사"
+          >
+            📋 복사
           </button>
         </div>
       </div>
