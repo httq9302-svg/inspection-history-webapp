@@ -1130,15 +1130,22 @@ function extractAssetNumber(text: string): string {
 
 function extractStatusText(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
-  const quotedStatusMatch = normalized.match(/(?:^|\s)상태\s+"\s*(.*?)\s*"\s*(?:제목\s*.*)?$/);
+  const quotedStatusMatch = normalized.match(
+    /(?:^|\s)상태\s+"\s*([\s\S]*?)\s*"(?=\s+(?:제목|참고사항|기종|기기상태|AS접수횟수|방문담당자|주소)|\s*$)/
+  );
   if (quotedStatusMatch) return quotedStatusMatch[1].trim();
-  const plainStatusMatch = normalized.match(/(?:^|\s)상태\s+(.*?)\s*(?:제목\s*.*)?$/);
+  const plainStatusMatch = normalized.match(
+    /(?:^|\s)상태\s+(.*?)(?=\s+(?:제목|참고사항|기종|기기상태|AS접수횟수|방문담당자|주소)|\s*$)/
+  );
   if (plainStatusMatch) return plainStatusMatch[1].trim();
   return "";
 }
 
 function extractTitleText(text: string): string {
-  const titleMatch = text.match(/제목\s+([^\n]+)/);
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const titleMatch = normalized.match(
+    /제목\s+(.*?)(?=\s+(?:상태|참고사항|기종|기기상태|AS접수횟수|방문담당자|주소)|\s*$)/
+  );
   return titleMatch ? titleMatch[1].trim() : "";
 }
 
@@ -1529,6 +1536,13 @@ const TEST_CASES: TestCase[] = [
     input:
       'A/S\tV\t모델\t"19V회사매월마감"\n접수자성함\t양명호\n접수자연락처\t010-6314-7409\n일반전화\t02-3408-8507\n★키맨성함/번호\t양명호 차장 010-6314-7409',
     expected: "02-3408-8507",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 내용이 참고사항까지 넘치지 않음",
+    input:
+      'A/S\tV\t모델\t"19V회사매월마감"\n접수자성함\t양명호\n접수자연락처\t010-6314-7409\n제목\t출력시 묻어나옴\n상태\t출력시 묻어나옴\n참고사항\t" [AS 히스토리 요약]\n📊 총 접수 건수: 3건\n✅ 특이사항 없음"',
+    expected: "내용: 출력시 묻어나옴\n처리내용:",
     mode: "blank-report",
   },
   {
