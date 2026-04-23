@@ -651,6 +651,13 @@ function extractStatusTextFromRaw(rawText: string): string {
   return value;
 }
 
+// Table-format 지역 extraction — reads 방문담당자 value (e.g., "수도권A" → "A")
+function extractTableRegion(rawText: string): string {
+  const match = rawText.match(/방문담당자[\t ]+[^\t\n]*?([A-E])(?=[\t \n]|$)/);
+  if (match) return match[1];
+  return "";
+}
+
 // Compact model/serial: "샤오미 MI-AIR/318115/00036240" → model + (rest as serial)
 function parseCompactModelSerial(line: string): ModelSerial {
   const trimmed = line.trim();
@@ -738,12 +745,92 @@ function extractTableKeyman(rawText: string): string {
   return lines.join("\n");
 }
 
+// One-line compact input decomposer — handles case where newlines were stripped.
+// Uses landmarks (마감 keyword, first phone, first slash) to identify the 4 sections:
+//   [grade+company+마감] [model/serial] [address] [phone(s)]
+// Returns null if the input doesn't look like compact format or can't be confidently split.
+function splitOneLineCompact(input: string): string[] | null {
+  const closingKeywordMatch = input.match(
+    /(분기마감|매월마감|매년마감|단순마감마감|단순마감|오픈\s*\d*시?반?)/
+  );
+  if (!closingKeywordMatch || closingKeywordMatch.index === undefined) return null;
+  const sec1End = closingKeywordMatch.index + closingKeywordMatch[0].length;
+  const sec1 = input.slice(0, sec1End);
+
+  const rest = input.slice(sec1End);
+
+  const phoneMatch = rest.match(/\d{2,3}-\d{3,4}-\d{4}/);
+  if (!phoneMatch || phoneMatch.index === undefined) return null;
+  const sec4Start = phoneMatch.index;
+  const middle = rest.slice(0, sec4Start);
+  const sec4 = rest.slice(sec4Start);
+
+  // middle = [model/serial][address]. Must contain at least one '/'.
+  const firstSlash = middle.indexOf("/");
+  if (firstSlash < 0) return null;
+
+  const after = middle.slice(firstSlash + 1);
+  const addressStartRel = findAddressStart(after);
+  if (addressStartRel < 0) return null;
+
+  const serial = after.slice(0, addressStartRel).replace(/\s+$/, "");
+  const address = after.slice(addressStartRel).trim();
+  const sec2 = middle.slice(0, firstSlash) + "/" + serial;
+
+  const sections = [sec1, sec2, address, sec4].map((s: string) => s.trim()).filter(Boolean);
+  return sections.length >= 2 ? sections : null;
+}
+
+// Find where the address section begins within the "model/serial + address" blob.
+// Picks the earliest plausible boundary from multiple hints:
+//   - floor hint (\d+층 followed by space + 한글/괄호) — last 1-2 digits are the floor, rest is serial
+//   - first 한글 character (serials don't contain 한글)
+//   - opening parenthesis
+//   - 지하/B+숫자+층
+// Returns -1 if no boundary found.
+function findAddressStart(after: string): number {
+  const candidates: number[] = [];
+
+  const floorMatch = after.match(/(\d+)층\s+[가-힣(]/);
+  if (floorMatch && floorMatch.index !== undefined) {
+    const digits = floorMatch[1];
+    const floorLen = digits.length <= 2 ? digits.length : 1;
+    candidates.push(floorMatch.index + (digits.length - floorLen));
+  }
+
+  const hangulMatch = after.match(/[가-힣]/);
+  if (hangulMatch && hangulMatch.index !== undefined) {
+    candidates.push(hangulMatch.index);
+  }
+
+  const parenMatch = after.match(/\(/);
+  if (parenMatch && parenMatch.index !== undefined) {
+    candidates.push(parenMatch.index);
+  }
+
+  const basementMatch = after.match(/지하\s*\d+층|B\d+층/);
+  if (basementMatch && basementMatch.index !== undefined) {
+    candidates.push(basementMatch.index);
+  }
+
+  if (candidates.length === 0) return -1;
+  return Math.min(...candidates);
+}
+
 // Split compact input block(s) — one block per 4-line group (company/model/address/phone)
 function splitCompactBlocks(input: string): string[][] {
   const lines = input
     .split(/\r?\n/)
     .map((l: string) => l.trim())
     .filter(Boolean);
+
+  // Single-line input with newlines stripped — try to decompose via landmarks
+  if (lines.length === 1) {
+    const decomposed = splitOneLineCompact(lines[0]);
+    if (decomposed && decomposed.length >= 3) {
+      return [decomposed];
+    }
+  }
 
   const blocks: string[][] = [];
   let current: string[] = [];
@@ -1218,6 +1305,7 @@ type PrinterReportFields = {
   grade: string;
   company: string;
   department: string;
+  region: string;
   keyman: string;
   model: string;
   serial: string;
@@ -1234,7 +1322,7 @@ function formatPrinterReport(f: PrinterReportFields): string {
     `등급:${f.grade}`,
     `업체명:${f.company}`,
     `부서명:${f.department}`,
-    "지역:C",
+    `지역:${f.region}`,
     `키맨/접수자:${f.keyman}`,
     ITEM_DIVIDER,
     `모델명:${f.model}`,
@@ -1288,6 +1376,7 @@ function buildBlankReportCompact(blockLines: string[]): ResultItem {
     grade,
     company,
     department,
+    region: "C",
     keyman,
     model,
     serial,
@@ -1336,6 +1425,9 @@ function buildBlankReport(blockLines: string[]): ResultItem {
   })();
   const assetNumber = extractAssetNumber(flatText);
 
+  // Region: table format reads 방문담당자 (수도권A/B/C/D/E), defaults to C
+  const region = format === "table" ? extractTableRegion(rawText) || "C" : "C";
+
   // Content: table format prefers 상태 field (multi-line, quote-stripped).
   // If 상태 has a value, use it and leave 처리내용 blank; otherwise fall back to defaults.
   let content: string;
@@ -1360,6 +1452,7 @@ function buildBlankReport(blockLines: string[]): ResultItem {
     grade,
     company,
     department,
+    region,
     keyman,
     model: ms.model,
     serial: ms.serial,
@@ -1642,6 +1735,55 @@ const TEST_CASES: TestCase[] = [
     input:
       "점검    N   MFC-L5700DN   19N동영공예품㈜-단순마감마감\n접수분야   점검\n기번   E7671",
     expected: "업체명:동영공예품",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 방문담당자 수도권A → 지역:A",
+    input:
+      'A/S\tV\t모델\t"19V회사매월마감"\n기번\tXYZ\t자산번호\tA1\n접수자연락처\t010-1111-2222\n방문담당자\t수도권A',
+    expected: "지역:A",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 방문담당자 수도권E → 지역:E",
+    input:
+      'A/S\tV\t모델\t"19V회사매월마감"\n기번\tXYZ\t자산번호\tA1\n접수자연락처\t010-1111-2222\n방문담당자\t수도권E',
+    expected: "지역:E",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 table - 방문담당자 없으면 기본 지역:C",
+    input:
+      'A/S\tV\t모델\t"19V회사매월마감"\n기번\tXYZ\t자산번호\tA1\n접수자연락처\t010-1111-2222',
+    expected: "지역:C",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 compact 한 줄 입력 - 시리얼 끝 자리 누락 안됨",
+    input:
+      "17S㈜프리즘산업-매월마감샤오미 MI-AIR/318115/000362407층 프리즘산업 (프리즘빌딩, 서울 강남구 역삼동 736-35)010-9312-7412 이영선/",
+    expected: "시리얼넘버:318115/00036240",
+    mode: "blank-report",
+  },
+  {
+    name: "미양식 compact 한 줄 입력 - 부서명 정상 추출",
+    input:
+      "17S㈜프리즘산업-매월마감샤오미 MI-AIR/318115/000362407층 프리즘산업010-9312-7412 이영선",
+    expected: "부서명:7층",
+    mode: "blank-report",
+  },
+  {
+    name: "청정기 compact 한 줄 입력 - 모델/시리얼 분리",
+    input:
+      "17S㈜프리즘산업-매월마감샤오미 MI-AIR/318115/000362407층 프리즘산업010-9312-7412 이영선",
+    expected: "시리얼넘버: 318115/00036240",
+    mode: "air-purifier",
+  },
+  {
+    name: "compact 한 줄 입력 - 2자리 층 (AP The Fin)",
+    input:
+      "31SS주식회사 에이피더핀매월마감ECOSYS-M5521CDN/VUY2Z03481서울 강남구 테헤란로 218에이피타워 11층 (AP Tower)010-6822-9591",
+    expected: "부서명:11층",
     mode: "blank-report",
   },
   {
