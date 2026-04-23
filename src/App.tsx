@@ -422,22 +422,79 @@ function transformAirPurifierText(input: string): string {
 // Mode 3: Samsung Note Titles (삼성노트 제목 생성)
 // ────────────────────────────────────────────────────────────────────────────
 
+const SEOUL_DISTRICTS = [
+  "송파구", "강남구", "서초구", "용산구", "성동구", "노원구", "은평구",
+  "마포구", "종로구", "광진구", "동작구", "관악구", "구로구",
+  "영등포구", "금천구", "동대문구", "서대문구", "도봉구", "강동구",
+  "강북구", "양천구", "성북구", "중랑구",
+];
+
+const BUSINESS_SUFFIXES = [
+  "학원", "교회", "의원", "치과", "병원", "약국", "법인", "회사",
+  "디자인", "피앤씨", "기획", "팩토리", "코리아", "메디칼", "메디컬",
+  "코스메틱", "바이오", "안전", "사이언스", "엔터테인먼트", "컴퍼니",
+  "인터내셔널", "그룹", "연구소", "협회", "재단", "스튜디오",
+];
+
+const COMPANY_STOP_PATTERN = new RegExp(
+  [
+    "㈜",
+    "\\(주\\)",
+    "주식회사",
+    "\\d+층",
+    "\\d+호",
+    "\\d+동",
+    "[A-Z]{2,}",
+    "빌딩",
+    "타워",
+    "분기마감",
+    "매월마감",
+    "매년마감",
+    "단순마감마감",
+    "단순마감",
+    "전일연락필수",
+    "준전일연락필수",
+    "진성완료",
+    "현장종료",
+    "오픈\\s*\\d*시?반?",
+    ">",
+    "-",
+    "본사",
+    ...SEOUL_DISTRICTS,
+  ].join("|")
+);
+
 function splitScheduleBlocks(input: string): string[][] {
   if (!input || !input.trim()) return [];
 
   const lines = input.split(/\r?\n/).map((line: string) => line.trimEnd());
   const blocks: string[][] = [];
   let current: string[] = [];
+  let expectedNextNumber: number | null = null;
 
   lines.forEach((line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
     if (/^#/.test(trimmed) && current.length === 0) return;
 
-    if (/^\d+\./.test(trimmed)) {
-      if (current.length > 0) blocks.push(current);
-      current = [trimmed];
-      return;
+    const numberMatch = trimmed.match(/^(\d+)\./);
+    if (numberMatch) {
+      const num = parseInt(numberMatch[1], 10);
+
+      if (expectedNextNumber === null) {
+        if (current.length > 0) blocks.push(current);
+        current = [trimmed];
+        expectedNextNumber = num + 1;
+        return;
+      }
+
+      if (num === expectedNextNumber) {
+        if (current.length > 0) blocks.push(current);
+        current = [trimmed];
+        expectedNextNumber = num + 1;
+        return;
+      }
+      // Non-sequential number = internal list item, fall through to treat as content
     }
 
     if (current.length === 0) return;
@@ -448,63 +505,6 @@ function splitScheduleBlocks(input: string): string[][] {
   return blocks;
 }
 
-const NOISE_KEYWORDS = [
-  "주식회사",
-  "\\(유\\)",
-  "\\(개인\\)",
-  "분기마감",
-  "매월마감",
-  "매년마감",
-  "단순마감마감",
-  "단순마감",
-  "전일연락필수",
-  "준전일연락필수",
-  "진성완료",
-  "현장종료",
-  "운영팀",
-  "개인영업",
-  "퍼스트",
-  "전자",
-  "대체기지참",
-  "용지없음에러",
-  "PC셋팅",
-];
-
-function normalizeSamsungText(text: string): string {
-  let result = text;
-  for (const keyword of NOISE_KEYWORDS) {
-    result = result.replace(new RegExp(keyword, "g"), "");
-  }
-  return result
-    .replace(/레벨\s*\d+/g, "")
-    .replace(/종료일[^\n]*/g, "")
-    .replace(/접수일[^\n]*/g, "")
-    .replace(/지역[^\n]*/g, "")
-    .replace(/\*\*.*?\*\*/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isLikelyAddressLine(line: string): boolean {
-  return /(서울|경기|인천|부산|대구|광주|대전|울산|세종|충북|충남|전북|전남|경북|경남|강원|제주|로|길|구|동|번지)/.test(line);
-}
-
-function isLikelyPhoneLine(line: string): boolean {
-  return /(01\d[- ]?\d{3,4}[- ]?\d{4}|0\d{1,2}[- ]?\d{3,4}[- ]?\d{4})/.test(line);
-}
-
-function isLikelyModelLine(line: string): boolean {
-  return (
-    /([A-Za-z가-힣0-9][A-Za-z가-힣0-9._-]{1,})\s*\/\s*([A-Z0-9-]{6,})/.test(line) ||
-    /(SL-|DocuCentre|DocuPrint|ECOSYS|Apeos|IR-|bizhub|TASKalfa|MX-|C2263|D470|D320|D450|X3220|C3373|C3375|MFC-)/i.test(line)
-  );
-}
-
-function extractTopSummaryLine(lines: string[]): string {
-  const first = (lines[0] || "").replace(/^\d+\.\s*/, "").trim();
-  return first || "점검";
-}
-
 function extractLocationLabel(lines: string[]): string {
   const joined = lines.join(" ");
   const basementFloorMatch = joined.match(/(지하\s*\d+층|B\s*\d+층)/i);
@@ -513,8 +513,7 @@ function extractLocationLabel(lines: string[]): string {
   if (hoMatch) return hoMatch[1];
   const floorDotMatch = joined.match(/(\d+[·.]\d+층)/);
   if (floorDotMatch) {
-    const floorText = floorDotMatch[1];
-    const parts = floorText.match(/\d+/g);
+    const parts = floorDotMatch[1].match(/\d+/g);
     if (parts && parts.length > 0) return `${parts[parts.length - 1]}층`;
   }
   const floorMatch = joined.match(/(\d+층)/);
@@ -524,150 +523,140 @@ function extractLocationLabel(lines: string[]): string {
   return "미기재";
 }
 
-function extractCompanyFromPrimaryLine(line: string): string {
+function extractCompanyBySuffixWord(line: string): string {
+  const alternation = BUSINESS_SUFFIXES.join("|");
+  const pattern = new RegExp(
+    `([가-힣A-Za-z0-9]{2,}(?:${alternation}))(?=[^가-힣A-Za-z0-9]|$)`,
+    "g"
+  );
+  const matches = [...line.matchAll(pattern)];
+  for (const m of matches) {
+    const candidate = m[1].trim();
+    if (candidate.length >= 3 && candidate.length <= 30) return candidate;
+  }
+  return "";
+}
+
+function applyCompanyStop(raw: string): string {
+  let result = raw.replace(/\([^)]*\)/g, "").replace(/^\d+\.\s*/, "").trim();
+  const stopMatch = result.match(COMPANY_STOP_PATTERN);
+  if (stopMatch && typeof stopMatch.index === "number" && stopMatch.index > 0) {
+    result = result.slice(0, stopMatch.index);
+  }
+  return result.trim();
+}
+
+function extractCompanyFromBodyLine(line: string): string {
   if (!line) return "";
 
   let raw = line.trim();
+  raw = raw.replace(/^"/, "").replace(/"$/, "");
 
-  raw = raw.replace(/^\d+(NN|SS|S|N|V)/, "").trim();
-  raw = raw.replace(/^[가-힣]{2,4}\s+/, "");
-
-  const slashIndex = raw.indexOf("/");
-  if (slashIndex >= 0) {
-    raw = raw.slice(0, slashIndex).trim();
-  }
-
-  raw = normalizeSamsungText(raw);
-
-  raw = raw
-    .replace(/[·•]/g, " ")
-    .replace(/\b(NN|SS|S|N|V)\b/g, "")
-    .replace(/^[-,\s]+/, "")
-    .replace(/[-,\s]+$/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const modelCut = raw.search(/\b(SL-|MFC-|DocuPrint|DocuCentre|ECOSYS|Apeos|bizhub|IR-|TASKalfa|MX-|HP-)/i);
-  if (modelCut >= 0) {
-    raw = raw.slice(0, modelCut).trim();
-  }
-
-  return raw;
-}
-
-function cleanCompanyCandidate(candidate: string): string {
-  return normalizeSamsungText(candidate)
-    .replace(/^\d+(NN|SS|S|N|V)/, "")
-    .replace(/^\d+[A-Z]?S/, "")
-    .replace(/^요\s*[가-힣A-Za-z]+\s*-\s*/, "")
-    .replace(/^[가-힣A-Za-z]+\s*-\s*/, "")
-    .replace(/^건축사사무소/, "")
-    .replace(/^법무법인\s*/, "")
-    .replace(/^세무법인\s*/, "")
-    .replace(/^주식회사\s*/, "")
-    .replace(/\s*주식회사\s*/g, " ")
-    .replace(/\s*\([^)]*\)/g, "")
-    .replace(/(?:,\s*)?주식회사\s*/g, " ")
-    .replace(/\s*-\s*$/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function extractKnownCompany(line: string): string {
-  if (!line) return "";
-
-  const primary = extractCompanyFromPrimaryLine(line);
-  if (primary) return primary;
-
-  const cleaned = cleanCompanyCandidate(line);
-  if (!cleaned) return "";
-
-  const beforeComma = cleaned.split(",")[0].trim();
-  const shortened = normalizeSamsungText(beforeComma)
-    .replace(/\b(NN|SS|S|N|V)\b/g, "")
-    .replace(/(?:금요일만 방문 가능|점심시간.*|엘베.*|계단.*|사진첨부.*|주정차.*)$/g, "")
-    .replace(/\s*-\s*$/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (shortened) return shortened;
-
-  const parts = cleaned
-    .split(/[\/-]/)
-    .map((part: string) => part.trim())
-    .filter(Boolean)
-    .filter((part: string) => !isLikelyAddressLine(part) && !isLikelyPhoneLine(part) && !isLikelyModelLine(part));
-
-  const preferred = parts.find((part: string) => /[가-힣A-Za-z]{2,}/.test(part));
-  return preferred || "";
-}
-
-function extractCompanySummary(lines: string[]): string {
-  const joined = lines.slice(1).join(" ").replace(/\s+/g, " ").trim();
-
-  const quotedGradeCompanyMatch = joined.match(/"?\d*(?:NN|SS|S|N|V)\s*([가-힣A-Za-z0-9㈜&()]+)\s*-\s*본사/);
-  if (quotedGradeCompanyMatch) {
-    return quotedGradeCompanyMatch[1]
-      .replace(/주식회사/g, "")
-      .replace(/㈜/g, "")
-      .trim();
-  }
-
-  const primaryLine = lines[1] || "";
-
-  if (primaryLine) {
-    const compactPrimary = primaryLine.replace(/\s+/g, " ").trim();
-    const inlinePrimaryMatch = compactPrimary.match(
-      /(?:^|\s)(?:[가-힣]{2,4}\s+)?(?:오전\d+시전\s+)?(?:세팅\s+)?(?:납품\s+)?([가-힣A-Za-z0-9]+(?:학원|교회|회사|법인|디자인|피앤씨|기획|팩토리|코리아|메디칼|코스메틱|바이오|안전|사이언스))\s+[A-Za-z0-9-]+(?:\([^)]*\))?\s*\/\s*서울/
-    );
-    if (inlinePrimaryMatch) return inlinePrimaryMatch[1].trim();
-  }
-
-  const primaryCompany = extractKnownCompany(primaryLine);
-  if (primaryCompany) return primaryCompany;
-
-  const descriptiveLine = lines.find(
-    (line: string, index: number) =>
-      index > 0 && !isLikelyAddressLine(line) && !isLikelyPhoneLine(line) && !isLikelyModelLine(line)
+  // Suffix form: "XXX㈜", "XXX주식회사", "XXX(주)"
+  const suffixMatch = raw.match(
+    /(?:^|\s|")\d*(?:NN|SS|S|N|V)?\s*([가-힣][가-힣0-9]{1,})(?:㈜|주식회사|\(주\))/
   );
+  if (suffixMatch) return suffixMatch[1].trim();
 
-  if (descriptiveLine) {
-    const compact = descriptiveLine.replace(/\s+/g, " ").trim();
-    const inlineMatch = compact.match(
-      /(?:^|\s)(?:[가-힣]{2,4}\s+)?(?:오전\d+시전\s+)?(?:세팅\s+)?(?:납품\s+)?([가-힣A-Za-z0-9]+(?:학원|교회|회사|법인|디자인|피앤씨|기획|팩토리|코리아|메디칼|코스메틱|바이오|안전|사이언스))\s+[A-Za-z0-9-]+(?:\([^)]*\))?\s*\/\s*서울/
+  // Prefix form: "주식회사 XXX" or "㈜XXX"
+  let afterAnchor: string | null = null;
+  const jushikMatch = raw.match(/주식회사\s+(.+)/);
+  if (jushikMatch) {
+    afterAnchor = jushikMatch[1];
+  } else {
+    const juMatch = raw.match(/㈜\s*([가-힣A-Za-z0-9].+)/);
+    if (juMatch) afterAnchor = juMatch[1];
+  }
+
+  // Grade-prefix anchor: "14SS광운", "30N코리움사이언스"
+  if (!afterAnchor) {
+    const gradeMatch = raw.match(
+      /(?:^|\s|")\d*(?:NN|SS|S|N|V)\s*([가-힣][^\s].*)/
     );
-    if (inlineMatch) return inlineMatch[1].trim();
+    if (gradeMatch) afterAnchor = gradeMatch[1];
   }
 
-  const contentLines = lines.slice(1);
-  for (const line of contentLines) {
-    if (isLikelyAddressLine(line) || isLikelyPhoneLine(line) || isLikelyModelLine(line)) continue;
-    const company = extractKnownCompany(line);
-    if (company) return company;
+  if (afterAnchor) {
+    const result = applyCompanyStop(afterAnchor);
+    if (result && /[가-힣]{2,}/.test(result)) return result;
   }
 
-  const company = extractKnownCompany(joined);
-  return company || "미기재";
+  // Final fallback: suffix-word pattern (학원, 교회, 의원...)
+  const suffixWord = extractCompanyBySuffixWord(raw);
+  if (suffixWord) return suffixWord;
+
+  return "";
+}
+
+function extractCompanyFromBody(lines: string[]): string {
+  for (let i = 1; i < lines.length; i += 1) {
+    const company = extractCompanyFromBodyLine(lines[i]);
+    if (company && /[가-힣]{2,}/.test(company) && company.length <= 30) {
+      return company;
+    }
+  }
+  return "";
+}
+
+function companyWordOverlap(candidate: string, bodyText: string): boolean {
+  if (!candidate || !bodyText) return false;
+  const words = candidate
+    .split(/\s+/)
+    .filter((w: string) => w.length >= 2 && /[가-힣A-Za-z]/.test(w));
+  if (words.length === 0) return false;
+  return words.some((w: string) => bodyText.includes(w));
+}
+
+function extractScheduleSummary(lines: string[], scheduleIndex: number): ResultItem {
+  const firstLineRaw = (lines[0] || "").trim();
+  const firstLineContent = firstLineRaw.replace(/^\d+\.\s*/, "").trim();
+
+  const slashIdx = firstLineContent.indexOf("/");
+  let candidateCompany = "";
+  let summaryAfterSlash = "";
+  if (slashIdx > 0) {
+    candidateCompany = firstLineContent.slice(0, slashIdx).trim();
+    summaryAfterSlash = firstLineContent.slice(slashIdx + 1).trim();
+  }
+
+  const bodyText = lines.slice(1).join(" ");
+  const bodyCompany = extractCompanyFromBody(lines);
+
+  let company: string;
+  let summary: string;
+
+  if (candidateCompany && companyWordOverlap(candidateCompany, bodyText)) {
+    // First-line "X" matches body content — it's a real company identifier
+    company = candidateCompany;
+    summary = summaryAfterSlash || firstLineContent || "점검";
+  } else if (bodyCompany) {
+    company = bodyCompany;
+    summary = firstLineContent || "점검";
+  } else if (candidateCompany) {
+    // No body confirmation but first line has slash — still use it
+    company = candidateCompany;
+    summary = summaryAfterSlash || "점검";
+  } else {
+    company = "미기재";
+    summary = firstLineContent || "점검";
+  }
+
+  const location = extractLocationLabel(lines);
+  const content = `${scheduleIndex + 1}/${company} ${location}/${summary}`;
+
+  const warnings: string[] = [];
+  if (company === "미기재") warnings.push("업체명 추출 실패");
+  if (location === "미기재") warnings.push("위치 추출 실패");
+
+  return {
+    content,
+    warning: warnings.length > 0 ? warnings.join(" · ") : undefined,
+  };
 }
 
 function transformSamsungNoteTitles(input: string): ResultItem[] {
   const blocks = splitScheduleBlocks(input);
-  return blocks.map((lines: string[], index: number) => {
-    const rawTopLine = extractTopSummaryLine(lines);
-    const finalTopLine = rawTopLine && rawTopLine !== "." ? rawTopLine : "점검";
-    const company = extractCompanySummary(lines);
-    const location = extractLocationLabel(lines);
-    const content = `${index + 1}/${company} ${location}/${finalTopLine}`;
-
-    const warnings: string[] = [];
-    if (company === "미기재") warnings.push("업체명 추출 실패");
-    if (location === "미기재") warnings.push("위치 추출 실패");
-
-    return {
-      content,
-      warning: warnings.length > 0 ? warnings.join(" · ") : undefined,
-    };
-  });
+  return blocks.map((lines: string[], index: number) => extractScheduleSummary(lines, index));
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1006,6 +995,48 @@ const TEST_CASES: TestCase[] = [
     name: "삼성노트 업체명 추출 실패 경고",
     input: "1.점검\n알수없는텍스트\n010-1234-5678",
     expected: "미기재",
+    mode: "samsung-note",
+  },
+  {
+    name: "삼성노트 첫줄 X/Y + 바디 매칭 (올리브인터내셔널)",
+    input: "1.올리브인터내셔널/모니터 전달\nAS    SS   PC모니터  비용 180,000원 안내완료   주식회사 올리브인터내셔널 AK빌딩 4층\n자산번호   S0378   시리얼번호\n접수자성함연락처   김종현 담당자님 010-7456-5416\n서울 강남구 논현로79길 12 (역삼동) AK빌딩 4층 (엘베 유)",
+    expected: "1/올리브인터내셔널 4층/모니터 전달",
+    mode: "samsung-note",
+  },
+  {
+    name: "삼성노트 내부 번호리스트 제외 (알스퀘어)",
+    input: "2.알스퀘어 신한리츠운용/랜선2개\n5.알스퀘어디자인-신한리츠운용 그레이츠강남\n6. 성함 : 천명규 책임 / 010-6210-8679\n7. 주소(엘리베이터 유무) :서울 서초구 서초동 1321-11 그레이츠강남 1층",
+    expected: "1/알스퀘어 신한리츠운용 1층/랜선2개",
+    mode: "samsung-note",
+  },
+  {
+    name: "삼성노트 첫줄 슬래시는 태스크 (블레이드)",
+    input: "3.블레이드/k드럼 분해PM\nA/S N ECOSYS-MA2100CFX \"4N주식회사 그리드엔터테인먼트-전 주식회사 일삼일 /\n기번   WDM4302486   자산번호   B7749\n접수자성함   서유나\n접수자연락처   010-5018-0906\n주소   서울 강남구 논현로155길 31   확장성",
+    expected: "1/그리드엔터테인먼트 미기재/블레이드/k드럼 분해PM",
+    mode: "samsung-note",
+  },
+  {
+    name: "삼성노트 구(區) 표기 정리 (광운)",
+    input: "4.1대\n14SS주식회사 광운송파구 > 강남구분기마감\nD450/800140653219\n서울 강남구 도산대로 159\n춘곡빌딩 (춘곡빌딩, 서울 강남구 신사동 561-30)",
+    expected: "1/광운 미기재/1대",
+    mode: "samsung-note",
+  },
+  {
+    name: "삼성노트 빈 첫줄은 점검 (팬틱스)",
+    input: "5.\n4NN주식회사 팬틱스-전 주식회사 컨셉케이컴퍼니분기마감\nApeosPort-C2060/513194\n서울 강남구 도산대로12길 25-1\n2층 엘베o 엘베는 3층(특이사항: 엘리베이터는 3층으로 내려야함) (서울 강남구 논현동 11-19)\n010-9119-3335 대표님 김수민 010-4893-3286(결제 키)",
+    expected: "1/팬틱스 2층/점검",
+    mode: "samsung-note",
+  },
+  {
+    name: "삼성노트 ㈜ 접미형 (신우개발)",
+    input: "6.9대\n25V신우개발㈜3층 매월마감\nAPEOS-C5570/175219\n서울 서초구 바우뫼로 198\n- (신우빌딩, 서울 서초구 양재동 82-7)",
+    expected: "1/신우개발 3층/9대",
+    mode: "samsung-note",
+  },
+  {
+    name: "삼성노트 6건 일괄 처리 순차 번호",
+    input: "1.올리브인터내셔널/모니터 전달\n주식회사 올리브인터내셔널 AK빌딩 4층\n2.알스퀘어 신한리츠운용/랜선2개\n5.알스퀘어디자인-신한리츠운용 그레이츠강남\n7. 주소 서울 서초구 1층\n3.블레이드/k드럼 분해PM\nN ECOSYS \"4N주식회사 그리드엔터테인먼트-전 주식회사\n4.1대\n14SS주식회사 광운송파구 > 강남구분기마감\n5.\n4NN주식회사 팬틱스-전 주식회사 분기마감\n2층\n6.9대\n25V신우개발㈜3층",
+    expected: "6/신우개발 3층/9대",
     mode: "samsung-note",
   },
   {
