@@ -81,8 +81,14 @@ const SECTION_DIVIDER = "------------------------------------";
 // Shared text utilities
 // ────────────────────────────────────────────────────────────────────────────
 
+// Recognizes divider lines made of ASCII `-`/`_` and common Unicode dashes/box-drawing chars
+// that appear when the output is round-tripped through apps like Samsung Notes.
+// Covered chars: - _ ─ (U+2500) ━ (U+2501) ⎯ (U+23BC) ─ ― (U+2015) — (U+2014) – (U+2013)
+const DIVIDER_CHAR_CLASS = "[-_\\u2500\\u2501\\u23BC\\u2015\\u2014\\u2013]";
+const DIVIDER_LINE_REGEX = new RegExp(`^\\s*${DIVIDER_CHAR_CLASS}{3,}\\s*$`);
+
 function isDividerLine(line: string): boolean {
-  return /^\s*[-_]{5,}\s*$/.test(line);
+  return DIVIDER_LINE_REGEX.test(line);
 }
 
 function findLine(lines: string[], regex: RegExp): string | null {
@@ -98,7 +104,8 @@ function collectMultilineField(
   startRegex: RegExp,
   stopRegex: RegExp,
   defaultLines: string[],
-  normalizeFirst = true
+  normalizeFirst = true,
+  breakOnNumberedItem = true
 ): string[] {
   const startIndex = cleaned.findIndex((line: string) => startRegex.test(line));
   if (startIndex < 0) return defaultLines;
@@ -109,7 +116,7 @@ function collectMultilineField(
   for (let i = startIndex + 1; i < cleaned.length; i += 1) {
     const nextLine = cleaned[i];
     if (stopRegex.test(nextLine)) break;
-    if (/^\d+\./.test(nextLine)) break;
+    if (breakOnNumberedItem && /^\d+\./.test(nextLine)) break;
     collected.push(nextLine);
   }
 
@@ -141,22 +148,25 @@ function buildItemTitleLine(cleaned: string[], blockIndex: number): string {
   const firstLine = cleaned[0] || "";
   const modelIndex = cleaned.findIndex((line: string) => /^모델명\s*:/.test(line));
 
-  if (/^\d+\./.test(firstLine)) {
-    return firstLine;
+  // Preserve existing "1." or "(1)" title lines when re-converting
+  if (/^(\d+\.|\(\d+\))/.test(firstLine)) {
+    // Normalize "1." → "(1)" for Samsung Notes compatibility
+    const normalized = firstLine.replace(/^(\d+)\.\s*/, "($1) ").trimEnd();
+    return normalized;
   }
 
   if (modelIndex > 0 && firstLine && !/:/.test(firstLine)) {
-    return `${blockIndex + 1}. ${firstLine.trim()}`;
+    return `(${blockIndex + 1}) ${firstLine.trim()}`;
   }
 
-  return `${blockIndex + 1}.`;
+  return `(${blockIndex + 1})`;
 }
 
 function stripConsumedTitleLine(cleaned: string[]): string[] {
   const firstLine = cleaned[0] || "";
   const modelIndex = cleaned.findIndex((line: string) => /^모델명\s*:/.test(line));
 
-  if (/^\d+\./.test(firstLine)) return cleaned.slice(1);
+  if (/^(\d+\.|\(\d+\))/.test(firstLine)) return cleaned.slice(1);
   if (modelIndex > 0 && firstLine && !/:/.test(firstLine)) return cleaned.slice(1);
 
   return cleaned;
@@ -349,10 +359,6 @@ function transformInspectionText(input: string): string {
 
   return [...normalizedHeader, ...normalizedItemSection, ...STANDARD_PARTS_SECTION].join("\n");
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Mode 2: Air Purifier (청정기 점검이력 변환)
-// ────────────────────────────────────────────────────────────────────────────
 
 function collectAirPurifierNoteLines(cleaned: string[]): string[] {
   return collectMultilineField(
@@ -1575,7 +1581,7 @@ const TEST_CASES: TestCase[] = [
   {
     name: "위치 제목 자동 번호 부여",
     input: "-------------------------------------\n15층입구\n모델명: D470\n시리얼넘버: 809150608947",
-    expected: "1. 15층입구",
+    expected: "(1) 15층입구",
     mode: "inspection",
   },
   {
