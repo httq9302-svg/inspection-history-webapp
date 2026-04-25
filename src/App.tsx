@@ -74,8 +74,8 @@ const MODE_CONFIG: Record<Mode, ModeConfig> = {
   },
 };
 
-const ITEM_DIVIDER = "═════════════════════════════";
-const SECTION_DIVIDER = "════════════════════════════════════";
+const ITEM_DIVIDER = "_________________________";
+const SECTION_DIVIDER = "_________________________";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Shared text utilities
