@@ -74,8 +74,8 @@ const MODE_CONFIG: Record<Mode, ModeConfig> = {
   },
 };
 
-const ITEM_DIVIDER = "ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ";
-const SECTION_DIVIDER = "ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ";
+const ITEM_DIVIDER = "ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ";
+const SECTION_DIVIDER = "ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Shared text utilities
@@ -148,19 +148,19 @@ function buildItemTitleLine(cleaned: string[], blockIndex: number): string {
   const firstLine = cleaned[0] || "";
   const modelIndex = cleaned.findIndex((line: string) => /^모델명\s*:/.test(line));
 
-  // Preserve & normalize existing title (all legacy formats → 【N】)
+  // Preserve & normalize existing title (all legacy formats → N.)
   const titleMatch = firstLine.match(/^(?:(\d+)\.|\((\d+)\)|【(\d+)】)\s*(.*)$/);
   if (titleMatch) {
     const num = titleMatch[1] || titleMatch[2] || titleMatch[3];
     const rest = (titleMatch[4] || "").trim();
-    return rest ? `【${num}】 ${rest}` : `【${num}】`;
+    return rest ? `${num}. ${rest}` : `${num}.`;
   }
 
   if (modelIndex > 0 && firstLine && !/:/.test(firstLine)) {
-    return `【${blockIndex + 1}】 ${firstLine.trim()}`;
+    return `${blockIndex + 1}. ${firstLine.trim()}`;
   }
 
-  return `【${blockIndex + 1}】`;
+  return `${blockIndex + 1}.`;
 }
 
 function stripConsumedTitleLine(cleaned: string[]): string[] {
@@ -455,7 +455,7 @@ function buildAirPurifierFromFields(
 
   const item = [
     ITEM_DIVIDER,
-    `【${blockIndex + 1}】`,
+    `${blockIndex + 1}.`,
     `모델명: ${model}`,
     `시리얼넘버: ${serial}`,
     `자산기번: ${assetNumber}`,
@@ -1346,7 +1346,7 @@ function formatPrinterReport(f: PrinterReportFields): string {
     `지역:${f.region}`,
     `키맨/접수자:${f.keyman}`,
     ITEM_DIVIDER,
-    "【1】",
+    "1.",
     `모델명:${f.model}`,
     `시리얼넘버:${f.serial}`,
     `자산기번: ${f.assetNumber}`,
@@ -1592,7 +1592,7 @@ const TEST_CASES: TestCase[] = [
   {
     name: "위치 제목 자동 번호 부여",
     input: "-------------------------------------\n15층입구\n모델명: D470\n시리얼넘버: 809150608947",
-    expected: "【1】 15층입구",
+    expected: "1. 15층입구",
     mode: "inspection",
   },
   {
