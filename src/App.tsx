@@ -74,17 +74,17 @@ const MODE_CONFIG: Record<Mode, ModeConfig> = {
   },
 };
 
-const ITEM_DIVIDER = "_________________________";
-const SECTION_DIVIDER = "_________________________";
+const ITEM_DIVIDER = "ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ";
+const SECTION_DIVIDER = "ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Shared text utilities
 // ────────────────────────────────────────────────────────────────────────────
 
-// Recognizes divider lines made of ASCII `-`/`_`, `═` (U+2550, our new default),
-// and common Unicode dashes/box-drawing chars that appear when output is round-tripped
+// Recognizes divider lines made of ASCII `-`/`_`, ㅡ (U+3161, our new default for Samsung Notes safety),
+// `═` (U+2550), and common Unicode dashes/box-drawing chars that appear when output is round-tripped
 // through apps like Samsung Notes.
-const DIVIDER_CHAR_CLASS = "[-_\\u2550\\u2500\\u2501\\u23BC\\u2015\\u2014\\u2013]";
+const DIVIDER_CHAR_CLASS = "[-_\\u3161\\u2550\\u2500\\u2501\\u23BC\\u2015\\u2014\\u2013]";
 const DIVIDER_LINE_REGEX = new RegExp(`^\\s*${DIVIDER_CHAR_CLASS}{3,}\\s*$`);
 
 function isDividerLine(line: string): boolean {
