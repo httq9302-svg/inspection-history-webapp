@@ -74,17 +74,17 @@ const MODE_CONFIG: Record<Mode, ModeConfig> = {
   },
 };
 
-const ITEM_DIVIDER = "_____________________________";
-const SECTION_DIVIDER = "------------------------------------";
+const ITEM_DIVIDER = "═════════════════════════════";
+const SECTION_DIVIDER = "════════════════════════════════════";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Shared text utilities
 // ────────────────────────────────────────────────────────────────────────────
 
-// Recognizes divider lines made of ASCII `-`/`_` and common Unicode dashes/box-drawing chars
-// that appear when the output is round-tripped through apps like Samsung Notes.
-// Covered chars: - _ ─ (U+2500) ━ (U+2501) ⎯ (U+23BC) ─ ― (U+2015) — (U+2014) – (U+2013)
-const DIVIDER_CHAR_CLASS = "[-_\\u2500\\u2501\\u23BC\\u2015\\u2014\\u2013]";
+// Recognizes divider lines made of ASCII `-`/`_`, `═` (U+2550, our new default),
+// and common Unicode dashes/box-drawing chars that appear when output is round-tripped
+// through apps like Samsung Notes.
+const DIVIDER_CHAR_CLASS = "[-_\\u2550\\u2500\\u2501\\u23BC\\u2015\\u2014\\u2013]";
 const DIVIDER_LINE_REGEX = new RegExp(`^\\s*${DIVIDER_CHAR_CLASS}{3,}\\s*$`);
 
 function isDividerLine(line: string): boolean {
@@ -148,25 +148,26 @@ function buildItemTitleLine(cleaned: string[], blockIndex: number): string {
   const firstLine = cleaned[0] || "";
   const modelIndex = cleaned.findIndex((line: string) => /^모델명\s*:/.test(line));
 
-  // Preserve existing "1." or "(1)" title lines when re-converting
-  if (/^(\d+\.|\(\d+\))/.test(firstLine)) {
-    // Normalize "1." → "(1)" for Samsung Notes compatibility
-    const normalized = firstLine.replace(/^(\d+)\.\s*/, "($1) ").trimEnd();
-    return normalized;
+  // Preserve & normalize existing title (all legacy formats → 【N】)
+  const titleMatch = firstLine.match(/^(?:(\d+)\.|\((\d+)\)|【(\d+)】)\s*(.*)$/);
+  if (titleMatch) {
+    const num = titleMatch[1] || titleMatch[2] || titleMatch[3];
+    const rest = (titleMatch[4] || "").trim();
+    return rest ? `【${num}】 ${rest}` : `【${num}】`;
   }
 
   if (modelIndex > 0 && firstLine && !/:/.test(firstLine)) {
-    return `(${blockIndex + 1}) ${firstLine.trim()}`;
+    return `【${blockIndex + 1}】 ${firstLine.trim()}`;
   }
 
-  return `(${blockIndex + 1})`;
+  return `【${blockIndex + 1}】`;
 }
 
 function stripConsumedTitleLine(cleaned: string[]): string[] {
   const firstLine = cleaned[0] || "";
   const modelIndex = cleaned.findIndex((line: string) => /^모델명\s*:/.test(line));
 
-  if (/^(\d+\.|\(\d+\))/.test(firstLine)) return cleaned.slice(1);
+  if (/^(?:\d+\.|\(\d+\)|【\d+】)/.test(firstLine)) return cleaned.slice(1);
   if (modelIndex > 0 && firstLine && !/:/.test(firstLine)) return cleaned.slice(1);
 
   return cleaned;
@@ -182,6 +183,15 @@ function splitItemBlocks(lines: string[]): string[][] {
         blocks.push(current);
         current = [];
       }
+      continue;
+    }
+    // 【N】 or 【N】 텍스트 also marks the start of a new item block
+    if (/^【\d+】/.test(line.trim())) {
+      if (current.length > 0) {
+        blocks.push(current);
+        current = [];
+      }
+      current.push(line);
       continue;
     }
     current.push(line);
@@ -445,7 +455,7 @@ function buildAirPurifierFromFields(
 
   const item = [
     ITEM_DIVIDER,
-    `${blockIndex + 1}.`,
+    `【${blockIndex + 1}】`,
     `모델명: ${model}`,
     `시리얼넘버: ${serial}`,
     `자산기번: ${assetNumber}`,
@@ -1336,6 +1346,7 @@ function formatPrinterReport(f: PrinterReportFields): string {
     `지역:${f.region}`,
     `키맨/접수자:${f.keyman}`,
     ITEM_DIVIDER,
+    "【1】",
     `모델명:${f.model}`,
     `시리얼넘버:${f.serial}`,
     `자산기번: ${f.assetNumber}`,
@@ -1348,7 +1359,7 @@ function formatPrinterReport(f: PrinterReportFields): string {
     "한틴이카유무:",
     "주차비지원유무:",
     "특이사항:",
-    ITEM_DIVIDER,
+    SECTION_DIVIDER,
     "※부품신청※",
     "보증기간 내 여부 :",
     "교체 전 카운터 누적 사용매수 :",
@@ -1357,7 +1368,7 @@ function formatPrinterReport(f: PrinterReportFields): string {
     "물품명:",
     "수량:",
     "출고여부:",
-    ITEM_DIVIDER,
+    SECTION_DIVIDER,
     "※자가신청※",
     "물품:",
     "수량:",
@@ -1581,7 +1592,7 @@ const TEST_CASES: TestCase[] = [
   {
     name: "위치 제목 자동 번호 부여",
     input: "-------------------------------------\n15층입구\n모델명: D470\n시리얼넘버: 809150608947",
-    expected: "(1) 15층입구",
+    expected: "【1】 15층입구",
     mode: "inspection",
   },
   {
